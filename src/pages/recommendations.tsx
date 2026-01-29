@@ -1,0 +1,495 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+type MeResponse =
+  | { ok: true; user: { id: number; email: string } | null }
+  | { ok: false; error: string };
+
+type Reason = { label: string; detail?: string };
+
+type RecItem = {
+  recId: string;
+  workKey: string | null;
+  isbn: string;
+  title: string;
+  authors: string;
+  coverUrl: string | null;
+  score: number;
+  reasons: Reason[];
+  subjects: string[];
+};
+
+type RecResponse =
+  | {
+      ok: true;
+      profile: {
+        likedCount: number;
+        topSubjects: { subject: string; weight: number }[];
+        topAuthors: { author: string; weight: number }[];
+      };
+      recommendations: RecItem[];
+      debug?: any;
+    }
+  | { ok: false; error: string };
+
+type AddResponse =
+  | { ok: true; entry: any }
+  | { ok: false; error: string };
+
+function nowId() {
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+type Toast = { id: string; text: string; kind: "success" | "error" | "info" };
+
+function truncate(text: string, max = 120) {
+  if (text.length <= max) return text;
+  return text.slice(0, max).trimEnd() + "…";
+}
+
+export default function RecommendationsPage() {
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const user = useMemo(() => (me && (me as any).ok ? (me as any).user : null), [me]);
+
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const [seedMode, setSeedMode] = useState<"liked" | "allRead">("liked");
+  const [minRating, setMinRating] = useState(4);
+  const [limit, setLimit] = useState(25);
+
+  const [data, setData] = useState<RecResponse | null>(null);
+  // ✅ saved by recId (not ISBN) so editions/dupes don't cause weird UI behavior
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastTimer = useRef<Record<string, any>>({});
+
+  function pushToast(kind: Toast["kind"], text: string, ms = 2400) {
+    const id = nowId();
+    const t: Toast = { id, kind, text };
+    setToasts((prev) => [t, ...prev].slice(0, 3));
+    if (toastTimer.current[id]) clearTimeout(toastTimer.current[id]);
+    toastTimer.current[id] = setTimeout(() => {
+      setToasts((prev) => prev.filter((x) => x.id !== id));
+      delete toastTimer.current[id];
+    }, ms);
+  }
+
+  async function refreshMe() {
+    const r = await fetch("/api/auth/me");
+    const j = (await r.json()) as MeResponse;
+    setMe(j);
+  }
+
+  async function load() {
+    setLoading(true);
+    setMsg(null);
+    setData(null);
+    try {
+      const r = await fetch(
+        `/api/recommendations?seedMode=${encodeURIComponent(seedMode)}&minRating=${minRating}&limit=${limit}`
+      );
+      const j = (await r.json()) as RecResponse;
+      setData(j);
+      if (!j.ok) setMsg(j.error || "Konnte Empfehlungen nicht laden.");
+    } catch (e: any) {
+      setMsg(e?.message ?? "Unbekannter Fehler");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshMe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, seedMode, minRating, limit]);
+
+  async function saveToLibrary(item: RecItem) {
+    setMsg(null);
+    if (!user) {
+      pushToast("info", "Bitte einloggen, um Bücher zu speichern.");
+      return;
+    }
+    try {
+      const r = await fetch("/api/library/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          isbn: item.isbn,
+          title: item.title,
+          authors: item.authors,
+          coverUrl: item.coverUrl,
+          status: "unread",
+          rating: null,
+        }),
+      });
+      const j = (await r.json()) as AddResponse;
+      if (!j.ok) {
+        pushToast("error", j.error || "Speichern fehlgeschlagen.");
+        return;
+      }
+      setSaved((p) => ({ ...p, [item.recId]: true }));
+      pushToast("success", `Gespeichert ✓  ${item.title}`);
+    } catch (e: any) {
+      pushToast("error", e?.message ?? "Speichern fehlgeschlagen.");
+    }
+  }
+
+  if (me && (me as any).ok && !user) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
+        <div style={{ width: "100%", maxWidth: 980 }}>
+          <h1 style={{ fontSize: 28, marginBottom: 6 }}>Empfehlungen</h1>
+          <p style={{ opacity: 0.85, marginTop: 0 }}>
+            Dafür brauchst du einen Account, weil Empfehlungen aus <b>deiner</b> Bibliothek abgeleitet werden.
+          </p>
+          <div style={{ marginTop: 16 }}>
+            <a href="/" style={{ textDecoration: "underline" }}>
+              ← Zur Startseite (Login)
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const okData = data && (data as any).ok ? (data as any) : null;
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
+      {/* Toasts */}
+      <div
+        style={{
+          position: "fixed",
+          top: 14,
+          right: 14,
+          zIndex: 9999,
+          display: "grid",
+          gap: 8,
+          width: 360,
+          maxWidth: "92vw",
+        }}
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: "rgba(0,0,0,0.55)",
+              backdropFilter: "blur(6px)",
+              boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
+              fontWeight: 800,
+              opacity: 0.98,
+            }}
+          >
+            <span style={{ opacity: 0.85 }}>
+              {t.kind === "success" ? "✅ " : t.kind === "error" ? "⚠️ " : "ℹ️ "}
+            </span>
+            {t.text}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ width: "100%", maxWidth: 1050 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
+          <div>
+            <h1 style={{ fontSize: 28, marginBottom: 6 }}>Empfehlungen</h1>
+            <p style={{ marginTop: 0, opacity: 0.85 }}>
+              Transparent: Jede Empfehlung zeigt dir <b>Warum</b> sie vorgeschlagen wird.
+            </p>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <a href="/library" style={{ textDecoration: "underline" }}>
+              → Deine Bibliothek
+            </a>
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{user ? user.email : ""}</div>
+          </div>
+        </div>
+
+        {msg && <div style={{ marginTop: 10, opacity: 0.9 }}>{msg}</div>}
+
+        {/* Controls */}
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontWeight: 900 }}>Basis</label>
+              <select
+                value={seedMode}
+                onChange={(e) => setSeedMode(e.target.value as any)}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  background: "transparent",
+                  color: "inherit",
+                  minWidth: 260,
+                }}
+              >
+                <option value="liked">Gelesen & Bewertung ≥ min</option>
+                <option value="allRead">Alle gelesenen (auch ohne Bewertung)</option>
+              </select>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontWeight: 900 }}>min. Bewertung</label>
+              <select
+                value={String(minRating)}
+                onChange={(e) => setMinRating(Number(e.target.value))}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  background: "transparent",
+                  color: "inherit",
+                  minWidth: 160,
+                }}
+              >
+                <option value="3">3+</option>
+                <option value="4">4+</option>
+                <option value="5">5+</option>
+                <option value="7">7+</option>
+              </select>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontWeight: 900 }}>Anzahl</label>
+              <select
+                value={String(limit)}
+                onChange={(e) => setLimit(Number(e.target.value))}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  background: "transparent",
+                  color: "inherit",
+                  minWidth: 160,
+                }}
+              >
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="40">40</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+
+            <button
+              onClick={() => void load()}
+              style={{
+                marginLeft: "auto",
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.18)",
+                background: "transparent",
+                cursor: "pointer",
+                fontWeight: 900,
+              }}
+            >
+              Neu berechnen
+            </button>
+          </div>
+
+          {/* Score explanation */}
+          <details
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "rgba(255,255,255,0.03)",
+            }}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.95 }}>
+              Wie entsteht der Score?
+              <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.7, fontWeight: 800 }}>
+                (V1, transparent & erklärbar)
+              </span>
+            </summary>
+
+            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.92, lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Formel (vereinfacht)</div>
+              <div style={{ marginBottom: 10 }}>
+                <code>Score = (Themen-Overlap + Autor-Bonus) / Dämpfung</code>
+              </div>
+
+              <div style={{ display: "grid", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 900 }}>1) Profil / Seeds</div>
+                  <div style={{ opacity: 0.9 }}>
+                    Seeds kommen aus deiner Bibliothek:
+                    <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                      <li>
+                        <b>liked</b>: Status <b>Gelesen</b> & Bewertung ≥ <b>min</b>
+                      </li>
+                      <li>
+                        <b>allRead</b>: alle <b>gelesenen</b> Bücher
+                      </li>
+                    </ul>
+                    Gewicht pro Seed (1..10):
+                    <div style={{ marginTop: 6 }}>
+                      <code>w = rating / 2</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 900 }}>2) Themen-Overlap (Hauptteil)</div>
+                  <div style={{ opacity: 0.9 }}>
+                    Kandidaten kommen von OpenLibrary. Für jedes Kandidaten-Subject <code>s</code>, das in deinem Profil
+                    häufig ist:
+                    <div style={{ marginTop: 6 }}>
+                      <code>score += Σ subjectWeight[s]</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 900 }}>3) Autor-Bonus</div>
+                  <div style={{ opacity: 0.9 }}>
+                    Wenn Autor:in des Kandidaten zu deinen Top-Autor:innen passt:
+                    <div style={{ marginTop: 6 }}>
+                      <code>score += 6</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 900 }}>4) Dämpfung (Fairness)</div>
+                  <div style={{ opacity: 0.9 }}>
+                    Bücher mit extrem vielen Subjects sollen nicht automatisch gewinnen:
+                    <div style={{ marginTop: 6 }}>
+                      <code>score = score / sqrt(1 + subjects.length / 8)</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, opacity: 0.75 }}>Der Score ist ein Ranking-Wert (relativ), kein Prozent-Match.</div>
+              </div>
+            </div>
+          </details>
+
+          <div style={{ fontSize: 12, opacity: 0.75 }}>
+            V1-Logik: Subjects/Genres aus deiner Bibliothek → Kandidaten von OpenLibrary → Score + „Warum?“.
+            {okData ? (
+              <span style={{ marginLeft: 8 }}>
+                Seeds: <b>{okData.profile?.likedCount ?? 0}</b> • Top-Themen:{" "}
+                <b>{okData.profile?.topSubjects?.length ?? 0}</b> • Top-Autor:innen:{" "}
+                <b>{okData.profile?.topAuthors?.length ?? 0}</b>
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Results */}
+        <div style={{ marginTop: 16, fontWeight: 900 }}>
+          Empfehlungen{" "}
+          {data && (data as any).ok ? <span style={{ opacity: 0.7 }}>({(data as any).recommendations.length})</span> : null}
+          {loading ? <span style={{ opacity: 0.7, marginLeft: 10 }}>(lädt…)</span> : null}
+        </div>
+
+        {data && (data as any).ok && (data as any).recommendations.length === 0 && !loading && (
+          <div style={{ marginTop: 10, opacity: 0.8 }}>
+            Noch keine Empfehlungen. Tipp: Markiere gelesene Bücher und gib Bewertungen (z.B. 7–10), damit das Profil stärker wird.
+          </div>
+        )}
+
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          {data && (data as any).ok
+            ? (data as any).recommendations.map((x: RecItem) => (
+                <div
+                  key={x.recId}
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "flex-start",
+                  }}
+                >
+                  {x.coverUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={x.coverUrl} alt="" width={58} height={86} style={{ borderRadius: 10, objectFit: "cover" }} />
+                  ) : (
+                    <div
+                      style={{
+                        width: 58,
+                        height: 86,
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        opacity: 0.6,
+                      }}
+                    />
+                  )}
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 900, fontSize: 16 }}>{x.title}</div>
+                    <div style={{ opacity: 0.85 }}>{x.authors}</div>
+                    <div style={{ opacity: 0.65, fontSize: 12 }}>
+                      ISBN: {x.isbn}
+                      {x.workKey ? <span style={{ marginLeft: 10 }}>• Work: {x.workKey}</span> : null}
+                    </div>
+
+                    <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                      <div style={{ fontWeight: 900, fontSize: 13 }}>Warum?</div>
+                      <ul style={{ margin: 0, paddingLeft: 18, opacity: 0.9 }}>
+                        {x.reasons.slice(0, 3).map((r, idx) => (
+                          <li key={idx} style={{ marginBottom: 4 }}>
+                            <span style={{ fontWeight: 800 }}>{r.label}:</span>{" "}
+                            <span style={{ opacity: 0.9 }}>{r.detail || ""}</span>
+                          </li>
+                        ))}
+                      </ul>
+
+                      {x.subjects?.length ? (
+                        <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
+                          Themen (Auszug): {truncate(x.subjects.slice(0, 6).join(", "), 140)}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+                    <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 800 }}>Score</div>
+                    <div style={{ fontWeight: 900 }}>{x.score.toFixed(1)}</div>
+
+                    <button
+                      disabled={!!saved[x.recId]}
+                      onClick={() => void saveToLibrary(x)}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.18)",
+                        background: saved[x.recId] ? "rgba(255,255,255,0.08)" : "transparent",
+                        cursor: saved[x.recId] ? "default" : "pointer",
+                        fontWeight: 900,
+                        opacity: saved[x.recId] ? 0.7 : 1,
+                        minWidth: 170,
+                      }}
+                      title="In deine Bibliothek speichern"
+                    >
+                      {saved[x.recId] ? "Gespeichert ✓" : "In Bibliothek speichern"}
+                    </button>
+                  </div>
+                </div>
+              ))
+            : null}
+        </div>
+      </div>
+    </div>
+  );
+}
