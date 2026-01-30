@@ -1,42 +1,40 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/server/db";
 
+type ExportEntry = {
+  isbn: string | null;
+  title: string | null;
+  authors: string | null;
+  coverUrl: string | null;
+  status: string | null;
+  rating: number | null;
+  notes: string | null;
+  subjects: string | null;
+  meta: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type Data =
-  | { ok: true; exportedAt: string; user: { id: number; email: string }; entries: any[] }
+  | { ok: true; entries: ExportEntry[] }
   | { ok: false; error: string };
 
-function getCookie(req: NextApiRequest, name: string) {
-  const raw = req.headers.cookie ?? "";
-  const parts = raw.split(";").map((p) => p.trim());
-  for (const p of parts) {
-    const [k, ...rest] = p.split("=");
-    if (k === name) return decodeURIComponent(rest.join("="));
-  }
-  return null;
-}
-
-async function requireUser(req: NextApiRequest) {
-  const sessionId = getCookie(req, "bv_session");
+async function getUserFromRequest(req: NextApiRequest) {
+  const sessionId = req.cookies?.bv_session || req.cookies?.session || null;
   if (!sessionId) return null;
 
+  const now = new Date();
   const session = await prisma.session.findUnique({
-    where: { id: sessionId },
-    select: { userId: true, expiresAt: true },
+    where: { id: String(sessionId) },
+    select: {
+      expiresAt: true,
+      user: { select: { id: true, email: true } },
+    },
   });
 
-  if (!session) return null;
-
-  if (new Date(session.expiresAt).getTime() < Date.now()) {
-    await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
-    return null;
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { id: true, email: true },
-  });
-
-  return user ?? null;
+  if (!session?.user) return null;
+  if (session.expiresAt && session.expiresAt <= now) return null;
+  return session.user;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data>) {
@@ -46,14 +44,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
   }
 
   try {
-    const user = await requireUser(req);
-    if (!user) return res.status(401).json({ ok: false, error: "Not logged in" });
+    const user = await getUserFromRequest(req);
+    if (!user) return res.status(401).json({ ok: false, error: "Not authenticated" });
 
     const rows = await prisma.libraryEntry.findMany({
       where: { userId: user.id },
-      orderBy: { id: "asc" },
+      orderBy: [{ updatedAt: "desc" }],
       select: {
-        id: true,
+        // internal id intentionally not exported
         isbn: true,
         title: true,
         authors: true,
@@ -62,13 +60,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         rating: true,
         notes: true,
         subjects: true,
-        description: true,
+        meta: true,
         createdAt: true,
+        updatedAt: true,
       },
     });
 
-    // Export should be portable: remove internal numeric id
-    const entries = rows.map((r) => ({
+    // Make export portable: no internal numeric ids, dates as ISO strings
+    const entries: ExportEntry[] = rows.map((r: typeof rows[number]) => ({
       isbn: r.isbn,
       title: r.title,
       authors: r.authors,
@@ -77,23 +76,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       rating: r.rating,
       notes: r.notes,
       subjects: r.subjects,
-      description: r.description,
+      meta: r.meta,
       createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
     }));
 
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="bookvault_export_${new Date().toISOString().slice(0, 10)}.json"`
-    );
-
-    return res.status(200).json({
-      ok: true,
-      exportedAt: new Date().toISOString(),
-      user,
-      entries,
-    });
+    return res.status(200).json({ ok: true, entries });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message ?? "Unknown error" });
+    return res.status(500).json({ ok: false, error: e?.message ?? "Server error" });
   }
 }
