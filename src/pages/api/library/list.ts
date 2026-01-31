@@ -17,6 +17,8 @@ type Data =
         description: string | null;
         meta: string | null;
         createdAt: string;
+        // Kompatibilität: falls Frontend updatedAt erwartet
+        updatedAt: string;
       }>;
     }
   | { ok: false; error: string };
@@ -39,10 +41,6 @@ async function getUserFromRequest(req: NextApiRequest) {
   return session.user;
 }
 
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data>) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -53,35 +51,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ ok: false, error: "Not authenticated" });
 
-    // Optional filters
-    const statusRaw = typeof req.query.status === "string" ? req.query.status.trim() : "";
-    const ratingRaw = typeof req.query.rating === "string" ? req.query.rating.trim() : "";
-    const take = clamp(Number(req.query.take ?? 100), 1, 300);
+    // Optional: take kann per query gesetzt werden
+    const takeRaw = Number(req.query.take ?? 100);
+    const take = Math.min(200, Math.max(1, Number.isFinite(takeRaw) ? takeRaw : 100));
 
-    const where: any = { userId: user.id };
-
-    // Status filter (if provided and not "all")
-    if (statusRaw && statusRaw !== "all") {
-      where.status = statusRaw;
-    }
-
-    // Rating filter:
-    // - "all" or empty -> no filter
-    // - "rated" -> rating not null
-    // - "unrated" -> rating is null
-    // - number -> rating equals that number
-    if (ratingRaw && ratingRaw !== "all") {
-      if (ratingRaw === "rated") where.rating = { not: null };
-      else if (ratingRaw === "unrated") where.rating = null;
-      else {
-        const n = Number(ratingRaw);
-        if (!Number.isNaN(n)) where.rating = n;
-      }
-    }
-
+    // WICHTIG: kein updatedAt verwenden (existiert nicht im Prisma Model)
     const rows = await prisma.libraryEntry.findMany({
-      where,
-      // WICHTIG: Schema hat kein updatedAt -> sortiere nach createdAt
+      where: { userId: user.id },
       orderBy: [{ createdAt: "desc" }],
       take,
       select: {
@@ -97,7 +73,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         description: true,
         meta: true,
         createdAt: true,
-        // updatedAt: true,  // <- NICHT vorhanden im Schema
       },
     });
 
@@ -106,14 +81,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       isbn: r.isbn,
       title: r.title,
       authors: r.authors,
-      coverUrl: r.coverUrl ?? null,
+      coverUrl: r.coverUrl,
       status: r.status,
-      rating: typeof r.rating === "number" ? r.rating : null,
-      notes: r.notes ?? null,
-      subjects: r.subjects ?? null,
-      description: r.description ?? null,
-      meta: r.meta ?? null,
+      rating: r.rating,
+      notes: r.notes,
+      subjects: r.subjects,
+      description: r.description,
+      meta: r.meta,
       createdAt: r.createdAt.toISOString(),
+      // Frontend-Kompatibilität: falls irgendwo updatedAt verwendet wird
+      updatedAt: r.createdAt.toISOString(),
     }));
 
     return res.status(200).json({ ok: true, entries });
