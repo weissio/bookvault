@@ -1,23 +1,24 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/server/db";
-
-type Entry = {
-  id: number;
-  isbn: string;
-  title: string;
-  authors: string;
-  coverUrl: string | null;
-  status: string;
-  rating: number | null;
-  notes: string | null;
-  subjects: string | null;
-  description: string | null;
-  meta: string | null;
-  createdAt: string;
-};
+import type { Prisma } from "@prisma/client";
 
 type Data =
-  | { ok: true; entries: Entry[] }
+  | {
+      ok: true;
+      entries: Array<{
+        id: number;
+        isbn: string;
+        title: string;
+        authors: string;
+        coverUrl: string | null;
+        status: string;
+        rating: number | null;
+        notes: string | null;
+        subjects: string | null;
+        description: string | null;
+        createdAt: string;
+      }>;
+    }
   | { ok: false; error: string };
 
 async function getUserFromRequest(req: NextApiRequest) {
@@ -38,10 +39,6 @@ async function getUserFromRequest(req: NextApiRequest) {
   return session.user;
 }
 
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data>) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -52,54 +49,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ ok: false, error: "Not authenticated" });
 
-    const statusRaw = String(req.query.status ?? "all");
-    const status =
-      statusRaw === "unread" || statusRaw === "reading" || statusRaw === "read" ? statusRaw : "all";
-
-    const ratingMinRaw = req.query.ratingMin;
-    const ratingMaxRaw = req.query.ratingMax;
-
-    const ratingMin =
-      ratingMinRaw == null ? null : clamp(Number(ratingMinRaw), 1, 10);
-    const ratingMax =
-      ratingMaxRaw == null ? null : clamp(Number(ratingMaxRaw), 1, 10);
-
-    const take = clamp(Number(req.query.take ?? 100), 1, 300);
-
-    const where: any = { userId: user.id };
-
-    if (status !== "all") where.status = status;
-
-    if (ratingMin != null || ratingMax != null) {
-      where.rating = {};
-      if (ratingMin != null) where.rating.gte = ratingMin;
-      if (ratingMax != null) where.rating.lte = ratingMax;
-    }
+    // Wichtig: Kein updatedAt, kein meta -> nur Felder die im Schema sicher existieren
+    const select = {
+      id: true,
+      isbn: true,
+      title: true,
+      authors: true,
+      coverUrl: true,
+      status: true,
+      rating: true,
+      notes: true,
+      subjects: true,
+      description: true,
+      createdAt: true,
+    } satisfies Prisma.LibraryEntrySelect;
 
     const rows = await prisma.libraryEntry.findMany({
-      where,
-      // Schema hat KEIN updatedAt -> createdAt nutzen
+      where: { userId: user.id },
       orderBy: [{ createdAt: "desc" }],
-      take,
-      select: {
-        id: true,
-        isbn: true,
-        title: true,
-        authors: true,
-        coverUrl: true,
-        status: true,
-        rating: true,
-        notes: true,
-        subjects: true,
-        description: true,
-        meta: true,
-        createdAt: true,
-      },
+      take: 200,
+      select,
     });
 
-    type Row = (typeof rows)[number];
-
-    const entries: Entry[] = rows.map((r: Row) => ({
+    const entries = rows.map((r) => ({
       id: r.id,
       isbn: r.isbn,
       title: r.title,
@@ -110,7 +82,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       notes: r.notes,
       subjects: r.subjects,
       description: r.description,
-      meta: r.meta,
       createdAt: r.createdAt.toISOString(),
     }));
 
