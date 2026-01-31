@@ -1,26 +1,23 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/server/db";
 
+type Entry = {
+  id: number;
+  isbn: string;
+  title: string;
+  authors: string;
+  coverUrl: string | null;
+  status: string;
+  rating: number | null;
+  notes: string | null;
+  subjects: string | null;
+  description: string | null;
+  meta: string | null;
+  createdAt: string;
+};
+
 type Data =
-  | {
-      ok: true;
-      entries: Array<{
-        id: number;
-        isbn: string;
-        title: string;
-        authors: string;
-        coverUrl: string | null;
-        status: string;
-        rating: number | null;
-        notes: string | null;
-        subjects: string | null;
-        description: string | null;
-        meta: string | null;
-        createdAt: string;
-        // Kompatibilität: falls Frontend updatedAt erwartet
-        updatedAt: string;
-      }>;
-    }
+  | { ok: true; entries: Entry[] }
   | { ok: false; error: string };
 
 async function getUserFromRequest(req: NextApiRequest) {
@@ -41,6 +38,10 @@ async function getUserFromRequest(req: NextApiRequest) {
   return session.user;
 }
 
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data>) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -51,13 +52,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     const user = await getUserFromRequest(req);
     if (!user) return res.status(401).json({ ok: false, error: "Not authenticated" });
 
-    // Optional: take kann per query gesetzt werden
-    const takeRaw = Number(req.query.take ?? 100);
-    const take = Math.min(200, Math.max(1, Number.isFinite(takeRaw) ? takeRaw : 100));
+    const statusRaw = String(req.query.status ?? "all");
+    const status =
+      statusRaw === "unread" || statusRaw === "reading" || statusRaw === "read" ? statusRaw : "all";
 
-    // WICHTIG: kein updatedAt verwenden (existiert nicht im Prisma Model)
+    const ratingMinRaw = req.query.ratingMin;
+    const ratingMaxRaw = req.query.ratingMax;
+
+    const ratingMin =
+      ratingMinRaw == null ? null : clamp(Number(ratingMinRaw), 1, 10);
+    const ratingMax =
+      ratingMaxRaw == null ? null : clamp(Number(ratingMaxRaw), 1, 10);
+
+    const take = clamp(Number(req.query.take ?? 100), 1, 300);
+
+    const where: any = { userId: user.id };
+
+    if (status !== "all") where.status = status;
+
+    if (ratingMin != null || ratingMax != null) {
+      where.rating = {};
+      if (ratingMin != null) where.rating.gte = ratingMin;
+      if (ratingMax != null) where.rating.lte = ratingMax;
+    }
+
     const rows = await prisma.libraryEntry.findMany({
-      where: { userId: user.id },
+      where,
+      // Schema hat KEIN updatedAt -> createdAt nutzen
       orderBy: [{ createdAt: "desc" }],
       take,
       select: {
@@ -76,7 +97,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       },
     });
 
-    const entries = rows.map((r) => ({
+    type Row = (typeof rows)[number];
+
+    const entries: Entry[] = rows.map((r: Row) => ({
       id: r.id,
       isbn: r.isbn,
       title: r.title,
@@ -89,8 +112,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       description: r.description,
       meta: r.meta,
       createdAt: r.createdAt.toISOString(),
-      // Frontend-Kompatibilität: falls irgendwo updatedAt verwendet wird
-      updatedAt: r.createdAt.toISOString(),
     }));
 
     return res.status(200).json({ ok: true, entries });
