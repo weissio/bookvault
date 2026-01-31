@@ -37,7 +37,7 @@ type DebugStats = {
   candidatesWithIsbn: number;
   candidatesAfterOwnedIsbnFilter: number;
   candidatesAfterOwnedWorkFilter: number;
-  candidatesAfterTitleFilter: number;
+  candidatesAfterOwnedTitleFilter: number;
 
   editionLookupsTried: number;
   editionLookupsSucceeded: number;
@@ -46,7 +46,9 @@ type DebugStats = {
   candidateWorkLookupsTried: number;
   candidateWorkLookupsSucceeded: number;
 
-  uniqueByWorkOrIsbn: number;
+  uniqueByWorkOrIsbnOrTitle: number;
+  uniqueByTitleKey: number;
+
   diversifiedDroppedByAuthor: number;
 };
 
@@ -63,7 +65,6 @@ type Data =
     }
   | { ok: false; error: string };
 
-// Prisma rows (explicit typing to avoid any[])
 type LibraryEntryRow = {
   isbn: string | null;
   title: string | null;
@@ -78,7 +79,7 @@ function safeParseSubjects(raw: string | null): string[] {
   const s = raw.trim();
   if (!s) return [];
   try {
-    const parsed: unknown = JSON.parse(s);
+    const parsed = JSON.parse(s);
     if (Array.isArray(parsed)) return parsed.map((x) => String(x)).filter(Boolean);
   } catch {
     if (s.includes(",")) return s.split(",").map((x) => x.trim()).filter(Boolean);
@@ -135,6 +136,17 @@ function normText(s: string) {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function primaryAuthorKey(authors: string) {
+  const first = (authors || "").split(",")[0] || "";
+  return normText(first).slice(0, 80) || "unbekannt";
+}
+
+function titleAuthorKey(title: string, authors: string) {
+  const t = normText(title).slice(0, 140);
+  const a = primaryAuthorKey(authors);
+  return `${t}||${a}`;
 }
 
 async function getUserFromRequest(req: NextApiRequest) {
@@ -198,7 +210,7 @@ async function openLibrarySearch(q: string, limit: number) {
   )}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`OpenLibrary error ${r.status}`);
-  const j: any = await r.json();
+  const j = await r.json();
   const docs: OpenLibraryDoc[] = Array.isArray(j?.docs) ? j.docs : [];
   return docs;
 }
@@ -212,9 +224,7 @@ async function fetchIsbnFromEditionKey(editionKey: string): Promise<string | nul
   const isbn13 = Array.isArray(j?.isbn_13) ? j.isbn_13.map(normalizeIsbn).find((x) => x && /^\d{13}$/.test(x)) : null;
   if (isbn13) return isbn13;
 
-  const isbn10 = Array.isArray(j?.isbn_10)
-    ? j.isbn_10.map(normalizeIsbn).find((x) => x && /^\d{9}[\dX]$/.test(x))
-    : null;
+  const isbn10 = Array.isArray(j?.isbn_10) ? j.isbn_10.map(normalizeIsbn).find((x) => x && /^\d{9}[\dX]$/.test(x)) : null;
   if (isbn10) return isbn10;
 
   return null;
@@ -284,7 +294,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       candidatesWithIsbn: 0,
       candidatesAfterOwnedIsbnFilter: 0,
       candidatesAfterOwnedWorkFilter: 0,
-      candidatesAfterTitleFilter: 0,
+      candidatesAfterOwnedTitleFilter: 0,
 
       editionLookupsTried: 0,
       editionLookupsSucceeded: 0,
@@ -293,29 +303,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       candidateWorkLookupsTried: 0,
       candidateWorkLookupsSucceeded: 0,
 
-      uniqueByWorkOrIsbn: 0,
+      uniqueByWorkOrIsbnOrTitle: 0,
+      uniqueByTitleKey: 0,
+
       diversifiedDroppedByAuthor: 0,
     };
 
-    // Owned ISBN set
+    // Owned ISBN set (raw + normalized)
     const ownedIsbn = new Set<string>();
+    const ownedIsbnNorm = new Set<string>();
+
+    // Owned Title+Author set (to drop already-owned across editions/translations)
+    const ownedTitleKeys = new Set<string>();
+
     for (const e of entries) {
       const raw = String(e.isbn ?? "").trim();
       if (raw) ownedIsbn.add(raw);
       const n = normalizeIsbn(raw);
-      if (n) ownedIsbn.add(n);
+      if (n) {
+        ownedIsbn.add(n);
+        ownedIsbnNorm.add(n);
+      }
+
+      const t = String(e.title ?? "").trim();
+      const a = String(e.authors ?? "").trim();
+      if (t) ownedTitleKeys.add(titleAuthorKey(t, a || "unbekannt"));
     }
 
     // Liked / read
-    const liked = entries.filter(
-      (e: LibraryEntryRow) =>
-        e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating
-    );
+    const liked = entries.filter((e: LibraryEntryRow) => {
+      return e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating;
+    });
     const readAll = entries.filter((e: LibraryEntryRow) => e.status === "read");
+
     debug.likedCount = liked.length;
     debug.readCount = readAll.length;
 
-    const profileSource: LibraryEntryRow[] = seedMode === "allRead" ? readAll : liked;
+    const profileSource = seedMode === "allRead" ? readAll : liked;
     debug.profileSourceCount = profileSource.length;
 
     // Profile weights (keep scores in a sane range vs old 1..5)
@@ -367,9 +391,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 
     // Resolve owned work-keys (so we can drop same book in other language/edition)
     const ownedWorkKeys = new Set<string>();
-    const ownedIsbnsToLookup = Array.from(ownedIsbn)
-      .map((x) => normalizeIsbn(x))
-      .filter((x): x is string => !!x);
+    const ownedIsbnsToLookup = Array.from(ownedIsbnNorm);
 
     // Keep it bounded (network)
     const MAX_OWNED_WORK_LOOKUPS = 80;
@@ -403,9 +425,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     }
     debug.docsTotal = docs.length;
 
-    // Dedup:
-    // 1) Prefer work-key. If none, fallback to ISBN as unique key.
-    // 2) Also filter out owned work-keys (drops translations / editions of already-owned books)
+    // Dedup strategy:
+    // - strongest: work-key
+    // - fallback: normalized ISBN
+    // - fallback: title+primaryAuthor key
     const bestByKey = new Map<string, RecItem>();
 
     const MAX_EDITION_LOOKUPS = 40;
@@ -418,12 +441,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       let isbn = pickIsbn(d.isbn);
 
       // Try edition_key -> isbn fallback
-      if (
-        !isbn &&
-        Array.isArray(d.edition_key) &&
-        d.edition_key.length > 0 &&
-        debug.editionLookupsTried < MAX_EDITION_LOOKUPS
-      ) {
+      if (!isbn && Array.isArray(d.edition_key) && d.edition_key.length > 0 && debug.editionLookupsTried < MAX_EDITION_LOOKUPS) {
         debug.editionLookupsTried++;
         const key = String(d.edition_key[0]);
         const resolved = await fetchIsbnFromEditionKey(key);
@@ -437,8 +455,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       if (!isbn) continue;
       debug.candidatesWithIsbn++;
 
+      const normCandIsbn = normalizeIsbn(isbn);
+
       // Owned ISBN filter
-      if (ownedIsbn.has(isbn)) continue;
+      if (ownedIsbn.has(isbn) || (normCandIsbn && ownedIsbnNorm.has(normCandIsbn))) continue;
       debug.candidatesAfterOwnedIsbnFilter++;
 
       const title = String(d.title ?? "").trim();
@@ -447,9 +467,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       const authorsArr = Array.isArray(d.author_name) ? d.author_name : [];
       const authors = authorsArr.map(String).filter(Boolean).join(", ") || "Unbekannt";
 
+      // Owned Title filter (kills duplicates across editions/translations)
+      const candTitleKey = titleAuthorKey(title, authors);
+      if (ownedTitleKeys.has(candTitleKey)) continue;
+      debug.candidatesAfterOwnedTitleFilter++;
+
       // Resolve candidate work-key (best effort)
       let wk = getWorkKeyFromSearchDoc(d);
-      const normCandIsbn = normalizeIsbn(isbn);
 
       if (normCandIsbn && debug.candidateWorkLookupsTried < MAX_CANDIDATE_WORK_LOOKUPS) {
         if (!candidateWorkCache.has(normCandIsbn)) {
@@ -462,11 +486,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         if (resolved) wk = resolved; // strongest
       }
 
-      // Owned work filter (drops “same book different edition/language”)
+      // Owned work filter (drops same work in other edition/language)
       if (wk && ownedWorkKeys.has(wk)) continue;
-
       debug.candidatesAfterOwnedWorkFilter++;
-      debug.candidatesAfterTitleFilter++;
 
       const subjects = uniq(
         (Array.isArray(d.subject) ? d.subject : [])
@@ -522,28 +544,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         });
       }
 
-      const key = wk ? `wk:${wk}` : `isbn:${isbn}`;
+      const dedupKey =
+        wk ? `wk:${wk}` : normCandIsbn ? `isbn:${normCandIsbn}` : `ta:${candTitleKey}`;
 
       const candidate: RecItem = {
-        isbn,
+        isbn: normCandIsbn ?? isbn,
         title,
         authors,
-        coverUrl: coverUrlFromIsbn(isbn),
+        coverUrl: coverUrlFromIsbn(normCandIsbn ?? isbn),
         score,
         reasons: reasons.slice(0, 3),
         subjects,
       };
 
-      const existing = bestByKey.get(key);
+      const existing = bestByKey.get(dedupKey);
       if (!existing || candidate.score > existing.score) {
-        bestByKey.set(key, candidate);
+        bestByKey.set(dedupKey, candidate);
       }
     }
 
-    debug.uniqueByWorkOrIsbn = bestByKey.size;
+    debug.uniqueByWorkOrIsbnOrTitle = bestByKey.size;
+
+    // SECOND PASS: ensure uniqueness by Title+Author key even if OL gives different keys/isbn
+    const bestByTitle = new Map<string, RecItem>();
+    for (const it of bestByKey.values()) {
+      const k = titleAuthorKey(it.title, it.authors);
+      const existing = bestByTitle.get(k);
+      if (!existing || it.score > existing.score) bestByTitle.set(k, it);
+    }
+    debug.uniqueByTitleKey = bestByTitle.size;
 
     // Diversification so one author doesn't dominate the whole list
-    const sorted = Array.from(bestByKey.values()).sort((a, b) => b.score - a.score);
+    const sorted = Array.from(bestByTitle.values()).sort((a, b) => b.score - a.score);
     const MAX_PER_AUTHOR = 2;
 
     const perAuthorCount = new Map<string, number>();
@@ -552,15 +584,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     for (const it of sorted) {
       if (diversified.length >= limit) break;
 
-      const primaryAuthor = normText((it.authors || "").split(",")[0] || "unbekannt").slice(0, 80);
-      const cur = perAuthorCount.get(primaryAuthor) ?? 0;
+      const primary = primaryAuthorKey(it.authors || "");
+      const cur = perAuthorCount.get(primary) ?? 0;
 
       if (cur >= MAX_PER_AUTHOR) {
         debug.diversifiedDroppedByAuthor++;
         continue;
       }
 
-      perAuthorCount.set(primaryAuthor, cur + 1);
+      perAuthorCount.set(primary, cur + 1);
       diversified.push(it);
     }
 
@@ -570,7 +602,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       recommendations: diversified,
       ...(debugOn ? { debug } : {}),
     });
-  } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message ?? "Server error" });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Server error";
+    return res.status(500).json({ ok: false, error: msg });
   }
 }
