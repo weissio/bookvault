@@ -1,6 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/server/db";
-import type { Prisma } from "@prisma/client";
 
 type Reason = { label: string; detail?: string };
 
@@ -34,11 +33,16 @@ type DebugStats = {
   ownedWorkLookupsSucceeded: number;
   ownedWorkKeysCount: number;
 
+  ownedWorkCanonLookupsTried: number;
+  ownedWorkCanonLookupsSucceeded: number;
+  ownedWorkCanonCount: number;
+
   candidatesSeen: number;
   candidatesWithIsbn: number;
   candidatesAfterOwnedIsbnFilter: number;
   candidatesAfterOwnedWorkFilter: number;
-  candidatesAfterOwnedTitleAuthorFilter: number;
+  candidatesAfterOwnedCanonicalFilter: number;
+  candidatesAfterTitleFilter: number;
 
   editionLookupsTried: number;
   editionLookupsSucceeded: number;
@@ -47,8 +51,11 @@ type DebugStats = {
   candidateWorkLookupsTried: number;
   candidateWorkLookupsSucceeded: number;
 
-  uniqueByKey: number;
-  dedupDroppedByTitleAuthor: number;
+  candidateWorkCanonLookupsTried: number;
+  candidateWorkCanonLookupsSucceeded: number;
+
+  uniqueByWorkOrIsbn: number;
+  uniqueByCanonicalOrWorkOrIsbn: number;
   diversifiedDroppedByAuthor: number;
 };
 
@@ -129,12 +136,6 @@ function normText(s: string) {
     .trim();
 }
 
-function titleAuthorKey(title: string, authors: string) {
-  const t = normText(title).slice(0, 140);
-  const primaryAuthor = normText((authors || "").split(",")[0] || "").slice(0, 80);
-  return `${t}__${primaryAuthor || "unknown"}`;
-}
-
 async function getUserFromRequest(req: NextApiRequest) {
   const sessionId = req.cookies?.bv_session || req.cookies?.session || null;
   if (!sessionId) return null;
@@ -154,7 +155,7 @@ async function getUserFromRequest(req: NextApiRequest) {
 }
 
 type OpenLibraryDoc = {
-  key?: string;
+  key?: string; // "/works/OL...W" in search.json (but sometimes)
   work_key?: string[];
   title?: string;
   author_name?: string[];
@@ -171,6 +172,13 @@ type OpenLibraryEdition = {
 
 type OpenLibraryIsbnEdition = {
   works?: { key?: string }[];
+};
+
+type OpenLibraryWork = {
+  title?: string;
+  original_title?: string;
+  // very commonly present for translations
+  translation_of?: string;
 };
 
 function normalizeWorkKey(raw: string | null | undefined): string | null {
@@ -197,7 +205,7 @@ async function openLibrarySearch(q: string, limit: number) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`OpenLibrary error ${r.status}`);
   const j = await r.json();
-  const docs: OpenLibraryDoc[] = Array.isArray(j?.docs) ? j.docs : [];
+  const docs: OpenLibraryDoc[] = Array.isArray(j?.docs) ? (j.docs as OpenLibraryDoc[]) : [];
   return docs;
 }
 
@@ -210,14 +218,13 @@ async function fetchIsbnFromEditionKey(editionKey: string): Promise<string | nul
   const isbn13 = Array.isArray(j?.isbn_13) ? j.isbn_13.map(normalizeIsbn).find((x) => x && /^\d{13}$/.test(x)) : null;
   if (isbn13) return isbn13;
 
-  const isbn10 = Array.isArray(j?.isbn_10)
-    ? j.isbn_10.map(normalizeIsbn).find((x) => x && /^\d{9}[\dX]$/.test(x))
-    : null;
+  const isbn10 = Array.isArray(j?.isbn_10) ? j.isbn_10.map(normalizeIsbn).find((x) => x && /^\d{9}[\dX]$/.test(x)) : null;
   if (isbn10) return isbn10;
 
   return null;
 }
 
+// Strong: resolve work-key for a specific ISBN via /isbn/{ISBN}.json
 async function fetchWorkKeyFromIsbn(isbn: string): Promise<string | null> {
   const norm = normalizeIsbn(isbn);
   if (!norm) return null;
@@ -227,6 +234,24 @@ async function fetchWorkKeyFromIsbn(isbn: string): Promise<string | null> {
   const j = (await r.json()) as OpenLibraryIsbnEdition;
   const wk = j?.works?.[0]?.key ? normalizeWorkKey(j.works[0].key) : null;
   return wk;
+}
+
+// NEW: canonical key to collapse translations / language variants across different OpenLibrary work keys
+// We use translation_of / original_title / title (normalized) as grouping key.
+async function fetchCanonicalFromWorkKey(workKey: string): Promise<string | null> {
+  const wk = normalizeWorkKey(workKey);
+  if (!wk) return null;
+  // workKey is like "/works/OL123W"
+  const url = `https://openlibrary.org${wk}.json`;
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  const j = (await r.json()) as OpenLibraryWork;
+
+  const base = String(j.translation_of || j.original_title || j.title || "").trim();
+  if (!base) return null;
+
+  const canon = normText(base).slice(0, 180);
+  return canon || null;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse<Data>) {
@@ -244,18 +269,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     const limit = Math.min(50, Math.max(10, Number(req.query.limit ?? 25)));
     const debugOn = String(req.query.debug ?? "") === "1";
 
-    const entrySelect = {
-      isbn: true,
-      title: true,
-      authors: true,
-      status: true,
-      rating: true,
-      subjects: true,
-    } satisfies Prisma.LibraryEntrySelect;
-
     const entries = await prisma.libraryEntry.findMany({
       where: { userId: user.id },
-      select: entrySelect,
+      select: {
+        isbn: true,
+        title: true,
+        authors: true,
+        status: true,
+        rating: true,
+        subjects: true,
+      },
     });
 
     const debug: DebugStats = {
@@ -278,11 +301,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       ownedWorkLookupsSucceeded: 0,
       ownedWorkKeysCount: 0,
 
+      ownedWorkCanonLookupsTried: 0,
+      ownedWorkCanonLookupsSucceeded: 0,
+      ownedWorkCanonCount: 0,
+
       candidatesSeen: 0,
       candidatesWithIsbn: 0,
       candidatesAfterOwnedIsbnFilter: 0,
       candidatesAfterOwnedWorkFilter: 0,
-      candidatesAfterOwnedTitleAuthorFilter: 0,
+      candidatesAfterOwnedCanonicalFilter: 0,
+      candidatesAfterTitleFilter: 0,
 
       editionLookupsTried: 0,
       editionLookupsSucceeded: 0,
@@ -291,38 +319,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       candidateWorkLookupsTried: 0,
       candidateWorkLookupsSucceeded: 0,
 
-      uniqueByKey: 0,
-      dedupDroppedByTitleAuthor: 0,
+      candidateWorkCanonLookupsTried: 0,
+      candidateWorkCanonLookupsSucceeded: 0,
+
+      uniqueByWorkOrIsbn: 0,
+      uniqueByCanonicalOrWorkOrIsbn: 0,
       diversifiedDroppedByAuthor: 0,
     };
 
-    // Owned ISBN set + owned title-author set
+    // Owned ISBN set
     const ownedIsbn = new Set<string>();
-    const ownedTitleAuthor = new Set<string>();
-
     for (const e of entries) {
-      const rawIsbn = String(e.isbn ?? "").trim();
-      if (rawIsbn) ownedIsbn.add(rawIsbn);
-      const n = normalizeIsbn(rawIsbn);
+      const raw = String(e.isbn ?? "").trim();
+      if (raw) ownedIsbn.add(raw);
+      const n = normalizeIsbn(raw);
       if (n) ownedIsbn.add(n);
-
-      const t = String(e.title ?? "").trim();
-      const a = normalizeAuthorString(String(e.authors ?? "").trim());
-      if (t) ownedTitleAuthor.add(titleAuthorKey(t, a));
     }
 
-    const liked = entries.filter(
-      (e) => e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating
-    );
+    // Liked / read
+    const liked = entries.filter((e) => e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating);
     const readAll = entries.filter((e) => e.status === "read");
-
     debug.likedCount = liked.length;
     debug.readCount = readAll.length;
 
     const profileSource = seedMode === "allRead" ? readAll : liked;
     debug.profileSourceCount = profileSource.length;
 
-    const ratingToWeight = (r: number) => clamp(r, 1, 10) / 2; // 1..10 -> 0.5..5
+    // Profile weights (1..10 -> 0.5..5.0)
+    const ratingToWeight = (r: number) => clamp(r, 1, 10) / 2;
 
     const subjectWeight = new Map<string, number>();
     const authorWeight = new Map<string, number>();
@@ -367,26 +391,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       });
     }
 
-    // Resolve owned work keys (optional, best-effort)
+    // Resolve owned work-keys
     const ownedWorkKeys = new Set<string>();
     const ownedIsbnsToLookup = Array.from(ownedIsbn)
       .map((x) => normalizeIsbn(x))
       .filter((x): x is string => !!x);
 
     const MAX_OWNED_WORK_LOOKUPS = 80;
-    const workCache = new Map<string, string | null>();
+    const workByIsbnCache = new Map<string, string | null>();
 
     for (const isbn of ownedIsbnsToLookup.slice(0, MAX_OWNED_WORK_LOOKUPS)) {
-      if (workCache.has(isbn)) continue;
+      if (workByIsbnCache.has(isbn)) continue;
       debug.ownedWorkLookupsTried++;
       const wk = await fetchWorkKeyFromIsbn(isbn);
-      workCache.set(isbn, wk);
+      workByIsbnCache.set(isbn, wk);
       if (wk) {
         debug.ownedWorkLookupsSucceeded++;
         ownedWorkKeys.add(wk);
       }
     }
     debug.ownedWorkKeysCount = ownedWorkKeys.size;
+
+    // NEW: Resolve canonical keys for owned works (translation_of/original_title/title)
+    const ownedCanon = new Set<string>();
+    const canonByWorkCache = new Map<string, string | null>();
+    const MAX_OWNED_CANON_LOOKUPS = 40;
+
+    const ownedWorkList = Array.from(ownedWorkKeys);
+    for (const wk of ownedWorkList.slice(0, MAX_OWNED_CANON_LOOKUPS)) {
+      if (canonByWorkCache.has(wk)) continue;
+      debug.ownedWorkCanonLookupsTried++;
+      const c = await fetchCanonicalFromWorkKey(wk);
+      canonByWorkCache.set(wk, c);
+      if (c) {
+        debug.ownedWorkCanonLookupsSucceeded++;
+        ownedCanon.add(c);
+      }
+    }
+    debug.ownedWorkCanonCount = ownedCanon.size;
 
     // Pull candidates
     const docs: OpenLibraryDoc[] = [];
@@ -404,18 +446,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     }
     debug.docsTotal = docs.length;
 
+    // Dedup maps:
+    // 1) by work-key if possible, else by isbn
     const bestByKey = new Map<string, RecItem>();
-    const bestByTitleAuthor = new Map<string, RecItem>();
+    // 2) NEW: by canonical (translation_of/original_title/title), else fallback to work/isbn
+    const bestByCanonOrKey = new Map<string, RecItem>();
 
     const MAX_EDITION_LOOKUPS = 40;
     const MAX_CANDIDATE_WORK_LOOKUPS = 90;
     const candidateWorkCache = new Map<string, string | null>();
+
+    const MAX_CANDIDATE_CANON_LOOKUPS = 120;
+    const candidateCanonCache = new Map<string, string | null>();
 
     for (const d of docs) {
       debug.candidatesSeen++;
 
       let isbn = pickIsbn(d.isbn);
 
+      // Try edition_key -> isbn fallback
       if (
         !isbn &&
         Array.isArray(d.edition_key) &&
@@ -435,10 +484,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       if (!isbn) continue;
       debug.candidatesWithIsbn++;
 
-      const normIsbn = normalizeIsbn(isbn) ?? isbn;
-
       // Owned ISBN filter
-      if (ownedIsbn.has(isbn) || ownedIsbn.has(normIsbn)) continue;
+      if (ownedIsbn.has(isbn)) continue;
       debug.candidatesAfterOwnedIsbnFilter++;
 
       const title = String(d.title ?? "").trim();
@@ -446,29 +493,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 
       const authorsArr = Array.isArray(d.author_name) ? d.author_name : [];
       const authors = authorsArr.map(String).filter(Boolean).join(", ") || "Unbekannt";
-      const authorsNorm = normalizeAuthorString(authors);
 
-      // Owned Title+Author filter (kills duplicates across editions/languages)
-      const taKey = titleAuthorKey(title, authorsNorm);
-      if (ownedTitleAuthor.has(taKey)) continue;
-      debug.candidatesAfterOwnedTitleAuthorFilter++;
-
-      // Work key best-effort
+      // Resolve candidate work-key (best effort)
       let wk = getWorkKeyFromSearchDoc(d);
+      const normCandIsbn = normalizeIsbn(isbn);
 
-      if (normIsbn && debug.candidateWorkLookupsTried < MAX_CANDIDATE_WORK_LOOKUPS) {
-        if (!candidateWorkCache.has(normIsbn)) {
+      if (normCandIsbn && debug.candidateWorkLookupsTried < MAX_CANDIDATE_WORK_LOOKUPS) {
+        if (!candidateWorkCache.has(normCandIsbn)) {
           debug.candidateWorkLookupsTried++;
-          const resolvedWk = await fetchWorkKeyFromIsbn(normIsbn);
-          candidateWorkCache.set(normIsbn, resolvedWk);
+          const resolvedWk = await fetchWorkKeyFromIsbn(normCandIsbn);
+          candidateWorkCache.set(normCandIsbn, resolvedWk);
           if (resolvedWk) debug.candidateWorkLookupsSucceeded++;
         }
-        const resolved = candidateWorkCache.get(normIsbn) ?? null;
-        if (resolved) wk = resolved;
+        const resolved = candidateWorkCache.get(normCandIsbn) ?? null;
+        if (resolved) wk = resolved; // strongest
       }
 
+      // Owned work filter
       if (wk && ownedWorkKeys.has(wk)) continue;
       debug.candidatesAfterOwnedWorkFilter++;
+
+      // NEW: Canonical work filter (catches translations with different work keys)
+      let canon: string | null = null;
+      if (wk && debug.candidateWorkCanonLookupsTried < MAX_CANDIDATE_CANON_LOOKUPS) {
+        if (!candidateCanonCache.has(wk)) {
+          debug.candidateWorkCanonLookupsTried++;
+          const c = await fetchCanonicalFromWorkKey(wk);
+          candidateCanonCache.set(wk, c);
+          if (c) debug.candidateWorkCanonLookupsSucceeded++;
+        }
+        canon = candidateCanonCache.get(wk) ?? null;
+      }
+
+      if (canon && ownedCanon.has(canon)) continue;
+      debug.candidatesAfterOwnedCanonicalFilter++;
+
+      debug.candidatesAfterTitleFilter++;
 
       const subjects = uniq(
         (Array.isArray(d.subject) ? d.subject : [])
@@ -478,6 +538,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
           .filter(Boolean)
       ).slice(0, 25);
 
+      // Score: overlap subjects + small author bonus, then normalize by subject count
       let score = 0;
       const overlap: { s: string; w: number }[] = [];
 
@@ -489,7 +550,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         }
       }
 
-      const authorMatch = topAuthors.some((a) => authorsNorm.includes(a.author) || a.author.includes(authorsNorm));
+      const authorStr = normalizeAuthorString(authors);
+      const authorMatch = topAuthors.some((a) => authorStr.includes(a.author) || a.author.includes(authorStr));
       if (authorMatch) score += 6;
 
       score = score / Math.sqrt(1 + subjects.length / 8);
@@ -510,53 +572,52 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         });
       }
       if (authorMatch) {
-        reasons.push({ label: "Autor-Ähnlichkeit", detail: "Autor:in taucht in deinem Profil stark auf" });
+        reasons.push({
+          label: "Autor-Ähnlichkeit",
+          detail: "Autor:in taucht in deinem Profil stark auf",
+        });
       }
       if (reasons.length === 0) {
-        reasons.push({ label: "Exploration", detail: "passt breit zu deinen gelesenen Büchern" });
+        reasons.push({
+          label: "Exploration",
+          detail: "passt breit zu deinen gelesenen Büchern (unspezifisches Match)",
+        });
       }
 
-      // Primary key: work-key if present, else ISBN
-      const primaryKey = wk ? `wk:${wk}` : `isbn:${normIsbn}`;
-
       const candidate: RecItem = {
-        isbn: normIsbn,
+        isbn,
         title,
         authors,
-        coverUrl: coverUrlFromIsbn(normIsbn),
+        coverUrl: coverUrlFromIsbn(isbn),
         score,
         reasons: reasons.slice(0, 3),
         subjects,
       };
 
-      // 1) Keep best per work/isbn
-      const existingPrimary = bestByKey.get(primaryKey);
-      if (!existingPrimary || candidate.score > existingPrimary.score) {
-        bestByKey.set(primaryKey, candidate);
-      }
+      // Key 1: work or isbn
+      const key = wk ? `wk:${wk}` : `isbn:${isbn}`;
+      const existing = bestByKey.get(key);
+      if (!existing || candidate.score > existing.score) bestByKey.set(key, candidate);
 
-      // 2) Also keep best per title+author (super robust dedup)
-      const existingTA = bestByTitleAuthor.get(taKey);
-      if (!existingTA) {
-        bestByTitleAuthor.set(taKey, candidate);
-      } else {
-        // If we already have one with same title+author, keep higher score and count drop
-        if (candidate.score > existingTA.score) bestByTitleAuthor.set(taKey, candidate);
-        debug.dedupDroppedByTitleAuthor++;
-      }
+      // Key 2: canonical (if available), else fallback to work/isbn key
+      const canonKey = canon ? `canon:${canon}` : key;
+      const existing2 = bestByCanonOrKey.get(canonKey);
+      if (!existing2 || candidate.score > existing2.score) bestByCanonOrKey.set(canonKey, candidate);
     }
 
-    // Now merge: use title+author map as final dedup base (strongest)
-    const deduped = Array.from(bestByTitleAuthor.values()).sort((a, b) => b.score - a.score);
-    debug.uniqueByKey = deduped.length;
+    debug.uniqueByWorkOrIsbn = bestByKey.size;
+    debug.uniqueByCanonicalOrWorkOrIsbn = bestByCanonOrKey.size;
 
-    // Diversification: avoid one author dominating
+    // Diversification so one author doesn't dominate the whole list
+    const sorted = Array.from(bestByCanonOrKey.values()).sort((a, b) => b.score - a.score);
     const MAX_PER_AUTHOR = 2;
+
     const perAuthorCount = new Map<string, number>();
     const diversified: RecItem[] = [];
 
-    for (const it of deduped) {
+    for (const it of sorted) {
       if (diversified.length >= limit) break;
+
       const primaryAuthor = normText((it.authors || "").split(",")[0] || "unbekannt").slice(0, 80);
       const cur = perAuthorCount.get(primaryAuthor) ?? 0;
 
@@ -575,7 +636,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       recommendations: diversified,
       ...(debugOn ? { debug } : {}),
     });
-  } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message ?? "Server error" });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Server error";
+    return res.status(500).json({ ok: false, error: msg });
   }
 }
