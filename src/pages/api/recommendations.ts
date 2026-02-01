@@ -131,67 +131,102 @@ async function openLibraryWorkToCanonicalKey(workKey: string): Promise<string | 
 
 /** -----------------------------
  *  Wikidata fallback for "same work"
- *  - We cannot rely on ISBN (P212) existing.
- *  - So we search by title (language de/en) and optionally check author in label/description.
+ *  - Robust against titles with/without leading articles (The/Die/Der/Das...)
+ *  - Tries multiple title variants and both DE/EN.
  *  - Returns a Q-ID string like "Q1212133" or null.
  *  ----------------------------- */
 const wdCache = new Map<string, string | null>();
 
+function stripLeadingArticle(t: string) {
+  const s = (t || "").trim();
+  return s
+    .replace(/^(the|a|an|der|die|das|ein|eine|el|la|los|las|le|les)\s+/i, "")
+    .trim();
+}
+
+function titleVariants(title: string, lang: "de" | "en") {
+  const base = (title || "").trim();
+  const noArt = stripLeadingArticle(base);
+
+  const vars = new Set<string>();
+  if (base) vars.add(base);
+  if (noArt) vars.add(noArt);
+
+  // Many EN Wikidata labels include "The ..."
+  if (lang === "en") {
+    const withThe = base.toLowerCase().startsWith("the ") ? base : `The ${base}`;
+    const withTheNoArt = noArt.toLowerCase().startsWith("the ") ? noArt : `The ${noArt}`;
+    if (withThe.trim()) vars.add(withThe.trim());
+    if (withTheNoArt.trim()) vars.add(withTheNoArt.trim());
+  }
+
+  return Array.from(vars).filter(Boolean);
+}
+
 async function wikidataSearchWorkQid(title: string, lang: "de" | "en", authorHint?: string) {
-  const key = `${lang}|${title}|${authorHint || ""}`;
-  if (wdCache.has(key)) return wdCache.get(key)!;
+  const cacheKey = `${lang}|${title}|${authorHint || ""}`;
+  if (wdCache.has(cacheKey)) return wdCache.get(cacheKey)!;
 
-  // wbsearchentities (fast). We then just take top results and do a light author hint check.
-  const params = new URLSearchParams();
-  params.set("action", "wbsearchentities");
-  params.set("format", "json");
-  params.set("limit", "5");
-  params.set("language", lang);
-  params.set("search", title);
+  const a = norm(authorHint || "");
+  const last = norm(authorLastName(authorHint || ""));
 
-  const url = `https://www.wikidata.org/w/api.php?${params.toString()}`;
+  const variants = titleVariants(title, lang);
 
   try {
-    const j = await fetchJson(url, 15000, { Accept: "application/json" });
-    const results = (j?.search || []) as Array<{
-      id?: string;
-      label?: string;
-      description?: string;
-    }>;
+    for (const v of variants) {
+      const params = new URLSearchParams();
+      params.set("action", "wbsearchentities");
+      params.set("format", "json");
+      params.set("limit", "8");
+      params.set("language", lang);
+      params.set("search", v);
 
-    const a = norm(authorHint || "");
-    const last = norm(authorLastName(authorHint || ""));
-    const candidates = results.filter((r) => r?.id && typeof r.id === "string");
+      const url = `https://www.wikidata.org/w/api.php?${params.toString()}`;
 
-    // Prefer those where author hint appears in description or label
-    const scored = candidates
-      .map((r) => {
-        const blob = norm(`${r.label || ""} ${r.description || ""}`);
-        let s = 0;
-        if (a && blob.includes(a)) s += 3;
-        if (last && blob.includes(last)) s += 2;
-        // Prefer novels/books if mentioned
-        if (blob.includes("novel") || blob.includes("roman") || blob.includes("book")) s += 1;
-        return { id: r.id as string, score: s };
-      })
-      .sort((x, y) => y.score - x.score);
+      const j = await fetchJson(url, 15000, { Accept: "application/json" });
+      const results = (j?.search || []) as Array<{
+        id?: string;
+        label?: string;
+        description?: string;
+      }>;
 
-    const best = scored[0]?.id ?? null;
-    wdCache.set(key, best);
-    return best;
+      const candidates = results.filter((r) => r?.id && typeof r.id === "string");
+      if (!candidates.length) continue;
+
+      const scored = candidates
+        .map((r) => {
+          const blob = norm(`${r.label || ""} ${r.description || ""}`);
+          let s = 0;
+          if (a && blob.includes(a)) s += 3;
+          if (last && blob.includes(last)) s += 2;
+          if (blob.includes("novel") || blob.includes("roman") || blob.includes("book")) s += 1;
+          return { id: r.id as string, score: s };
+        })
+        .sort((x, y) => y.score - x.score);
+
+      const best = scored[0]?.id ?? null;
+      wdCache.set(cacheKey, best);
+      return best;
+    }
+
+    wdCache.set(cacheKey, null);
+    return null;
   } catch {
-    wdCache.set(key, null);
+    wdCache.set(cacheKey, null);
     return null;
   }
 }
 
 async function wikidataWorkKeyForBook(title: string, authors: string) {
-  // Try DE then EN; include author hint (primary author)
   const a = pickPrimaryAuthor(authors);
+
+  // Try DE then EN; each uses robust title variants
   const de = await wikidataSearchWorkQid(title, "de", a);
   if (de) return `wd:${de}`;
+
   const en = await wikidataSearchWorkQid(title, "en", a);
   if (en) return `wd:${en}`;
+
   return null;
 }
 
