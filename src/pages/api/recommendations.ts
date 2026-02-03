@@ -504,33 +504,41 @@ type PreferenceSignals = {
 };
 
 async function loadPreferenceSignals(userId: number): Promise<PreferenceSignals> {
-  const rows = await prisma.recommendationEvent.findMany({
-    where: {
-      userId,
-      event: { in: ["pref_like", "pref_dislike"] },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 1000,
-    select: {
-      workKey: true,
-      event: true,
-    },
-  });
+  try {
+    const rows = await prisma.recommendationEvent.findMany({
+      where: {
+        userId,
+        event: { in: ["pref_like", "pref_dislike"] },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1000,
+      select: {
+        workKey: true,
+        event: true,
+      },
+    });
 
-  const likedKeys = new Set<string>();
-  const dislikedKeys = new Set<string>();
-  const seen = new Set<string>();
+    const likedKeys = new Set<string>();
+    const dislikedKeys = new Set<string>();
+    const seen = new Set<string>();
 
-  for (const r of rows) {
-    const key = String(r.workKey || "").trim();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
+    for (const r of rows) {
+      const key = String(r.workKey || "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
 
-    if (r.event === "pref_like") likedKeys.add(key);
-    if (r.event === "pref_dislike") dislikedKeys.add(key);
+      if (r.event === "pref_like") likedKeys.add(key);
+      if (r.event === "pref_dislike") dislikedKeys.add(key);
+    }
+
+    return { likedKeys, dislikedKeys };
+  } catch (e: any) {
+    // Graceful fallback for environments where RecommendationEvent table is not migrated yet.
+    if (e?.code === "P2021") {
+      return { likedKeys: new Set<string>(), dislikedKeys: new Set<string>() };
+    }
+    throw e;
   }
-
-  return { likedKeys, dislikedKeys };
 }
 
 function buildPreferenceKeys(

@@ -109,6 +109,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 
     return res.status(200).json({ ok: true, key, action });
   } catch (e: any) {
+    if (e?.code === "P2021") {
+      return res.status(503).json({ ok: false, error: "Feedback-Tabelle fehlt. Bitte Migration ausführen." });
+    }
     return res.status(500).json({ ok: false, error: e?.message ?? "Server error" });
   }
 }
