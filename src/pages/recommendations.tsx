@@ -13,6 +13,7 @@ type RecItem = {
   title: string;
   authors: string;
   coverUrl: string | null;
+  description?: string | null;
   score: number;
   reasons: Reason[];
   subjects: string[];
@@ -59,7 +60,7 @@ export default function RecommendationsPage() {
 
   const [seedMode, setSeedMode] = useState<"liked" | "allRead">("liked");
   const [minRating, setMinRating] = useState(4);
-  const [limit, setLimit] = useState(25);
+  const [limit, setLimit] = useState(15);
 
   const [data, setData] = useState<RecResponse | null>(null);
   // ✅ saved by recId (not ISBN) so editions/dupes don't cause weird UI behavior
@@ -325,9 +326,7 @@ export default function RecommendationsPage() {
                 }}
               >
                 <option value="15">15</option>
-                <option value="25">25</option>
-                <option value="40">40</option>
-                <option value="50">50</option>
+                <option value="20">20</option>
               </select>
             </div>
 
@@ -366,7 +365,7 @@ export default function RecommendationsPage() {
             <div style={{ marginTop: 10, fontSize: 13, opacity: 0.92, lineHeight: 1.5 }}>
               <div style={{ fontWeight: 900, marginBottom: 6 }}>Formel (vereinfacht)</div>
               <div style={{ marginBottom: 10 }}>
-                <code>Score = (Themen-Overlap + Autor-Bonus) / Dämpfung</code>
+                <code>Score = Story (60%) + Themen (28%) + Autor (12%)</code>
               </div>
 
               <div style={{ display: "grid", gap: 10 }}>
@@ -426,7 +425,7 @@ export default function RecommendationsPage() {
           </details>
 
           <div style={{ fontSize: 12, opacity: 0.75 }}>
-            V1-Logik: Subjects/Genres aus deiner Bibliothek → Kandidaten von OpenLibrary → Score + „Warum?“.
+            V1-Logik: Story + Subjects aus deiner Bibliothek → Kandidaten von OpenLibrary → Score + „Warum?“ + Kurzinhalt.
             {okData ? (
               <span style={{ marginLeft: 8 }}>
                 Seeds: <b>{okData.profile?.likedCount ?? 0}</b> • Top-Themen:{" "}
@@ -486,6 +485,12 @@ export default function RecommendationsPage() {
                       ISBN: {x.isbn}
                       {x.workKey ? <span style={{ marginLeft: 10 }}>• Work: {x.workKey}</span> : null}
                     </div>
+
+                    {x.description ? (
+                      <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
+                        <span style={{ fontWeight: 800 }}>Kurzinhalt:</span> {truncate(x.description, 190)}
+                      </div>
+                    ) : null}
 
                     <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
                       <div style={{ fontWeight: 900, fontSize: 13 }}>Warum?</div>

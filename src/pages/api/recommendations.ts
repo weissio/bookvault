@@ -10,6 +10,7 @@ type Recommendation = {
   title: string;
   authors: string;
   coverUrl?: string | null;
+  description?: string | null;
   score: number;
   reasons: Reason[];
   subjects: string[];
@@ -29,6 +30,7 @@ type OpenLibraryDoc = {
   author_name?: string[];
   isbn?: string[];
   subject?: string[];
+  first_sentence?: string | { value?: string } | Array<string | { value?: string }>;
 };
 
 type OpenLibrarySearchCacheEntry = {
@@ -669,7 +671,7 @@ async function openLibrarySearch(query: string, limit: number, debug: DebugInfo,
   params.set("q", query);
   params.set("mode", "everything");
   params.set("limit", String(limit));
-  params.set("fields", "title,author_name,isbn,subject,cover_i,edition_key,key");
+  params.set("fields", "title,author_name,isbn,subject,first_sentence,cover_i,edition_key,key");
 
   const url = `https://openlibrary.org/search.json?${params.toString()}`;
 
@@ -708,6 +710,31 @@ function bestIsbnFromDoc(doc: OpenLibraryDoc): string | null {
 function authorsFromDoc(doc: OpenLibraryDoc): string {
   const arr: string[] = Array.isArray(doc?.author_name) ? doc.author_name : [];
   return arr.slice(0, 3).join(", ");
+}
+
+function descriptionFromDoc(doc: OpenLibraryDoc): string | null {
+  const fs = doc?.first_sentence;
+  if (!fs) return null;
+
+  if (typeof fs === "string") {
+    const t = fs.trim();
+    return t || null;
+  }
+
+  if (Array.isArray(fs)) {
+    for (const item of fs) {
+      if (typeof item === "string" && item.trim()) return item.trim();
+      if (item && typeof item === "object" && typeof item.value === "string" && item.value.trim()) return item.value.trim();
+    }
+    return null;
+  }
+
+  if (typeof fs === "object" && typeof fs.value === "string") {
+    const t = fs.value.trim();
+    return t || null;
+  }
+
+  return null;
 }
 
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
@@ -890,7 +917,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const user = await getSessionUser(req);
     if (!user) return jsonErr(res, 401, "Not authenticated");
 
-    const limit = clamp(parseInt(String(req.query.limit ?? "25"), 10) || 25, 1, 50);
+    const requestedLimit = parseInt(String(req.query.limit ?? "15"), 10) || 15;
+    const limit = requestedLimit >= 20 ? 20 : 15;
     const minRating = clamp(parseInt(String(req.query.minRating ?? "4"), 10) || 4, 0, 10);
     const seedMode = String(req.query.seedMode ?? "liked");
     const debugMode = String(req.query.debug ?? "") === "1";
@@ -1000,6 +1028,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           title,
           authors,
           coverUrl: coverFromIsbn(isbn),
+          description: descriptionFromDoc(doc),
           score,
           reasons,
           subjects,
