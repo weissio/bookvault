@@ -101,6 +101,54 @@ function authorLastName(author: string) {
   return parts.length ? parts[parts.length - 1] : "";
 }
 
+const TITLE_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
+  "der", "die", "das", "ein", "eine", "und", "oder", "von", "zu", "mit", "im", "am",
+  "le", "la", "les", "de", "des", "du", "et", "un", "une",
+  "el", "los", "las", "del", "y", "un", "una",
+  "il", "lo", "gli", "i", "dei", "degli",
+]);
+
+function primaryAuthorKey(authors: string) {
+  return norm(pickPrimaryAuthor(authors));
+}
+
+function titleTokens(title: string) {
+  return norm(title)
+    .split(" ")
+    .filter(Boolean)
+    .filter((t) => !TITLE_STOPWORDS.has(t));
+}
+
+function titleTokenKey(title: string) {
+  return titleTokens(title).slice(0, 10).join(" ");
+}
+
+function tokenOverlapRatio(a: string[], b: string[]) {
+  if (a.length === 0 || b.length === 0) return 0;
+  const sa = new Set(a);
+  const sb = new Set(b);
+  let inter = 0;
+  for (const t of sa) {
+    if (sb.has(t)) inter += 1;
+  }
+  const den = Math.max(sa.size, sb.size);
+  return den === 0 ? 0 : inter / den;
+}
+
+function isTitleNearDuplicateSameAuthor(aTitle: string, bTitle: string) {
+  const ak = titleTokenKey(aTitle);
+  const bk = titleTokenKey(bTitle);
+  if (!ak || !bk) return false;
+  if (ak === bk) return true;
+  if (ak.includes(bk) || bk.includes(ak)) return true;
+
+  const at = ak.split(" ").filter(Boolean);
+  const bt = bk.split(" ").filter(Boolean);
+  const overlap = tokenOverlapRatio(at, bt);
+  return overlap >= 0.7;
+}
+
 async function pMapLimit<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>) {
   if (items.length === 0) return [] as R[];
 
@@ -338,6 +386,9 @@ function scoreCandidate(doc: OpenLibraryDoc, profile: Profile) {
  *  ----------------------------- */
 async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   const ownedIsbn = new Set<string>();
+  const ownedCanonical = new Set<string>();
+  const ownedTitlesByPrimaryAuthor = new Map<string, string[]>();
+
   const normalizedIsbns = uniq(
     entries
       .map((e) => String(e?.isbn || "").trim())
@@ -346,6 +397,20 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
 
   for (const isbn of normalizedIsbns) {
     ownedIsbn.add(isbn);
+  }
+
+  for (const e of entries) {
+    const title = String(e?.title || "").trim();
+    const authorKey = primaryAuthorKey(String(e?.authors || ""));
+    const titleKey = titleTokenKey(title);
+    if (!titleKey) continue;
+
+    ownedCanonical.add(`${authorKey}|${titleKey}`);
+    if (!authorKey) continue;
+
+    const arr = ownedTitlesByPrimaryAuthor.get(authorKey) ?? [];
+    arr.push(title);
+    ownedTitlesByPrimaryAuthor.set(authorKey, arr);
   }
 
   const ownedWork = new Set<string>();
@@ -365,7 +430,7 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   debug.ownedWorkLookupsSucceeded = succeeded;
   debug.ownedWorkKeysCount = ownedWork.size;
 
-  return { ownedIsbn, ownedWork };
+  return { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor };
 }
 
 /** -----------------------------
@@ -417,7 +482,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    const { ownedIsbn, ownedWork } = await buildOwnedKeys(entries, debug);
+    const { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor } = await buildOwnedKeys(entries, debug);
     debug.ownedWorkCanonCount = ownedWork.size;
 
     const topSubjects = profile.topSubjects.map((x) => x.subject);
@@ -497,8 +562,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const seenIsbn = new Set<string>();
     const seenWorkOrIsbn = new Set<string>();
     const seenCanonical = new Set<string>();
+    const seenTitlesByPrimaryAuthor = new Map<string, string[]>();
 
-    function cheapCanonicalKey(r: Recommendation) {
+    function fallbackCanonicalKey(r: Recommendation) {
+      const authorKey = primaryAuthorKey(r.authors);
+      const tKey = titleTokenKey(r.title);
+      if (tKey) return `na:${authorKey}|${tKey}`;
+
       const aLast = authorLastName(pickPrimaryAuthor(r.authors));
       return `na:${norm(r.title)}|${norm(aLast)}`;
     }
@@ -508,9 +578,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const r = item.rec;
       const wk = item.workKey;
+      const authorKey = primaryAuthorKey(r.authors);
+      const tKey = titleTokenKey(r.title);
+      const strictOwnedKey = `${authorKey}|${tKey}`;
 
       if (ownedIsbn.has(r.isbn)) continue;
       if (seenIsbn.has(r.isbn)) continue;
+      if (tKey && ownedCanonical.has(strictOwnedKey)) continue;
+
+      if (authorKey) {
+        const ownedTitles = ownedTitlesByPrimaryAuthor.get(authorKey) ?? [];
+        if (ownedTitles.some((ownedTitle) => isTitleNearDuplicateSameAuthor(r.title, ownedTitle))) continue;
+      }
+
       afterOwnedIsbn++;
 
       if (wk && ownedWork.has(wk)) continue;
@@ -520,9 +600,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (seenWorkOrIsbn.has(workOrIsbnKey)) continue;
       seenWorkOrIsbn.add(workOrIsbnKey);
 
-      const ck = wk ? `wk:${wk}` : cheapCanonicalKey(r);
+      if (authorKey) {
+        const seenTitles = seenTitlesByPrimaryAuthor.get(authorKey) ?? [];
+        if (seenTitles.some((seenTitle) => isTitleNearDuplicateSameAuthor(r.title, seenTitle))) continue;
+      }
+
+      const ck = wk ? `wk:${wk}` : fallbackCanonicalKey(r);
       if (seenCanonical.has(ck)) continue;
       seenCanonical.add(ck);
+
+      if (authorKey) {
+        const seenTitles = seenTitlesByPrimaryAuthor.get(authorKey) ?? [];
+        seenTitles.push(r.title);
+        seenTitlesByPrimaryAuthor.set(authorKey, seenTitles);
+      }
 
       afterTitle++;
       seenIsbn.add(r.isbn);
