@@ -165,6 +165,62 @@ const STORY_STOPWORDS = new Set([
   "le", "la", "les", "des", "avec", "dans", "pour", "une", "sur",
 ]);
 
+const GENERIC_SUBJECTS = new Set([
+  "fiction",
+  "fiction general",
+  "general",
+  "literature",
+  "novel",
+  "novels",
+  "roman",
+  "romance",
+  "classic",
+  "classics",
+]);
+
+const MOTIF_LEXICON: Record<string, string[]> = {
+  coming_of_age: [
+    "coming", "age", "adolescent", "adolescence", "teen", "teenager", "youth", "young", "boy", "girl", "bildungsroman",
+  ],
+  mentorship: [
+    "mentor", "teacher", "guide", "elder", "older", "old", "wisdom", "apprentice", "student", "master",
+  ],
+  friendship: [
+    "friend", "friendship", "companionship", "companions", "buddy", "bond",
+  ],
+  grief_loss: [
+    "grief", "loss", "bereavement", "mourning", "widow", "widower", "death", "dead", "illness", "cancer",
+  ],
+  self_discovery: [
+    "journey", "search", "identity", "self", "meaning", "healing", "growth", "awakening", "solitude", "loneliness",
+  ],
+  books_literary_world: [
+    "books", "book", "bookseller", "library", "writer", "author", "literary", "manuscript", "publisher",
+  ],
+};
+
+function isGenericSubject(subject: string) {
+  const n = norm(subject).replace(/\s+/g, " ");
+  return GENERIC_SUBJECTS.has(n);
+}
+
+function extractMotifsFromText(input: string): string[] {
+  const tokens = extractStoryTerms(input);
+  const found = new Set<string>();
+
+  for (const [motif, keywords] of Object.entries(MOTIF_LEXICON)) {
+    for (const kw of keywords) {
+      if (tokens.includes(norm(kw))) {
+        found.add(motif);
+        break;
+      }
+    }
+  }
+
+  return Array.from(found);
+}
+
+
 function extractStoryTerms(input: string): string[] {
   return norm(input)
     .split(" ")
@@ -176,6 +232,8 @@ function extractStoryTerms(input: string): string[] {
 type StoryProfile = {
   weights: Map<string, number>;
   topTerms: { term: string; weight: number }[];
+  motifWeights: Map<string, number>;
+  topMotifs: { motif: string; weight: number }[];
   normDenominator: number;
 };
 
@@ -185,6 +243,7 @@ function buildStoryProfile(entries: any[], minRating: number): StoryProfile {
   );
 
   const weights = new Map<string, number>();
+  const motifWeights = new Map<string, number>();
 
   for (const e of liked) {
     const rating = typeof e.rating === "number" ? e.rating : minRating;
@@ -197,9 +256,15 @@ function buildStoryProfile(entries: any[], minRating: number): StoryProfile {
       parseSubjects(e.subjects).join(" "),
     ].filter(Boolean);
 
-    const terms = Array.from(new Set(extractStoryTerms(textParts.join(" "))));
+    const merged = textParts.join(" ");
+    const terms = Array.from(new Set(extractStoryTerms(merged)));
     for (const t of terms) {
       weights.set(t, (weights.get(t) ?? 0) + w);
+    }
+
+    const motifs = extractMotifsFromText(merged);
+    for (const m of motifs) {
+      motifWeights.set(m, (motifWeights.get(m) ?? 0) + w);
     }
   }
 
@@ -208,9 +273,16 @@ function buildStoryProfile(entries: any[], minRating: number): StoryProfile {
     .slice(0, 20)
     .map(([term, weight]) => ({ term, weight }));
 
-  const normDenominator = topTerms.slice(0, 10).reduce((acc, x) => acc + x.weight, 0) || 1;
+  const topMotifs = Array.from(motifWeights.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([motif, weight]) => ({ motif, weight }));
 
-  return { weights, topTerms, normDenominator };
+  const normDenominator =
+    topTerms.slice(0, 10).reduce((acc, x) => acc + x.weight, 0) +
+    topMotifs.slice(0, 4).reduce((acc, x) => acc + x.weight * 1.5, 0) || 1;
+
+  return { weights, topTerms, motifWeights, topMotifs, normDenominator };
 }
 
 function tokenOverlapRatio(a: string[], b: string[]) {
@@ -461,7 +533,8 @@ function computeProfile(entries: any[], minRating: number): Profile {
     for (const s of subjects) {
       const k = (s || "").trim();
       if (!k) continue;
-      subjWeights.set(k, (subjWeights.get(k) || 0) + w);
+      const factor = isGenericSubject(k) ? 0.15 : 1;
+      subjWeights.set(k, (subjWeights.get(k) || 0) + w * factor);
     }
 
     const authors = (e.authors || "").split(",").map((x: string) => x.trim()).filter(Boolean);
@@ -592,10 +665,15 @@ function scoreCandidate(doc: OpenLibraryDoc, profile: Profile, storyProfile: Sto
   const topSubj = profile.topSubjects.map((s) => s.subject);
   const topAuth = profile.topAuthors.map((a) => a.author);
 
-  const subjectSet = new Set(docSubjects.map((s) => norm(s)));
+  const normalizedSubjects = docSubjects.map((s) => norm(s));
+  const subjectSet = new Set(normalizedSubjects);
   const subjHits: string[] = [];
+  let topicRaw = 0;
   for (const s of topSubj) {
-    if (subjectSet.has(norm(s))) subjHits.push(s);
+    const ns = norm(s);
+    if (!subjectSet.has(ns)) continue;
+    subjHits.push(s);
+    topicRaw += isGenericSubject(s) ? 0.25 : 1;
   }
 
   const docAuthNorm = new Set(docAuthors.map((a) => norm(a)));
@@ -613,16 +691,31 @@ function scoreCandidate(doc: OpenLibraryDoc, profile: Profile, storyProfile: Sto
     storyHits.push({ term: t, weight: w });
   }
 
+  const candidateMotifs = extractMotifsFromText(storyInput);
+  const motifHits: { motif: string; weight: number }[] = [];
+  for (const m of candidateMotifs) {
+    const w = storyProfile.motifWeights.get(m);
+    if (!w) continue;
+    storyRaw += w * 1.5;
+    motifHits.push({ motif: m, weight: w });
+  }
+
   storyHits.sort((a, b) => b.weight - a.weight);
+  motifHits.sort((a, b) => b.weight - a.weight);
 
   const storyNorm = Math.min(1, storyRaw / storyProfile.normDenominator);
-  const topicNorm = topSubj.length ? Math.min(1, subjHits.length / Math.min(3, topSubj.length)) : 0;
+  const topicNorm = topSubj.length ? Math.min(1, topicRaw / Math.min(3, topSubj.length)) : 0;
   const authorNorm = authHit ? 1 : 0;
 
   const score = STORY_WEIGHT * storyNorm + TOPIC_WEIGHT * topicNorm + AUTHOR_WEIGHT * authorNorm;
 
   const reasons: Reason[] = [];
-  if (storyHits.length > 0) {
+  if (motifHits.length > 0) {
+    reasons.push({
+      label: "Story-Ähnlichkeit",
+      detail: `ähnlicher Erzählkern: ${motifHits.slice(0, 2).map((x) => `„${x.motif.replace(/_/g, " ")}“`).join(", ")}`,
+    });
+  } else if (storyHits.length > 0) {
     reasons.push({
       label: "Story-Ähnlichkeit",
       detail: `ähnliche Motive: ${storyHits.slice(0, 2).map((x) => `„${x.term}“`).join(", ")}`,
@@ -770,6 +863,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.topSubjectsCount = profile.topSubjects.length;
     debug.topAuthorsCount = profile.topAuthors.length;
     debug.storyTermsCount = storyProfile.topTerms.length;
+    debug.storyMotifsCount = storyProfile.topMotifs.length;
 
     if (profile.likedCount === 0) {
       debug.totalMs = Date.now() - startedAt;
