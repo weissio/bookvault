@@ -125,6 +125,31 @@ function titleTokenKey(title: string) {
   return titleTokens(title).slice(0, 10).join(" ");
 }
 
+function parseSubjects(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x).trim()).filter(Boolean);
+  }
+
+  if (typeof raw !== "string") return [];
+  const t = raw.trim();
+  if (!t) return [];
+
+  try {
+    const parsed = JSON.parse(t);
+    if (Array.isArray(parsed)) {
+      return parsed.map((x) => String(x).trim()).filter(Boolean);
+    }
+  } catch {
+    // fall back to delimiter parsing
+  }
+
+  if (t.includes(",")) {
+    return t.split(",").map((x) => x.trim()).filter(Boolean);
+  }
+
+  return [t];
+}
+
 function tokenOverlapRatio(a: string[], b: string[]) {
   if (a.length === 0 || b.length === 0) return 0;
   const sa = new Set(a);
@@ -252,7 +277,7 @@ function computeProfile(entries: any[], minRating: number): Profile {
     const rating = typeof e.rating === "number" ? e.rating : minRating;
     const w = clamp(rating, minRating, 10);
 
-    const subjects: string[] = Array.isArray(e.subjects) ? e.subjects : [];
+    const subjects = parseSubjects(e.subjects);
     for (const s of subjects) {
       const k = (s || "").trim();
       if (!k) continue;
