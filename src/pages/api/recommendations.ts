@@ -205,6 +205,16 @@ const MOTIF_LEXICON: Record<string, string[]> = {
   ],
 };
 
+
+const MOTIF_LABEL_DE: Record<string, string> = {
+  coming_of_age: "Erwachsenwerden",
+  mentorship: "Mentorenschaft",
+  friendship: "Freundschaft",
+  grief_loss: "Verlust und Trauer",
+  self_discovery: "Selbstfindung",
+  books_literary_world: "Buecherwelt",
+};
+
 function isGenericSubject(subject: string) {
   const n = norm(subject).replace(/\s+/g, " ");
   return GENERIC_SUBJECTS.has(n);
@@ -795,16 +805,35 @@ async function wikidataDescriptionByCanonicalKey(canonicalKey: string | null): P
   }
 }
 
-function synthesizeDescription(rec: Recommendation): string {
-  const motifs = rec.reasons
-    .map((r) => String(r.detail || ""))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
+function looksGerman(text: string): boolean {
+  const t = norm(text);
+  if (!t) return false;
+  const hints = [" und ", " mit ", " der ", " die ", " das ", " ein ", " eine ", " ist ", " fuer ", " ueber "];
+  let hits = 0;
+  for (const h of hints) {
+    if (t.includes(h.trim())) hits++;
+  }
+  return hits >= 2;
+}
 
-  const subjects = (rec.subjects || []).slice(0, 4).join(", ");
-  const core = subjects || motifs || "thematisch passend zu deinem Profil";
-  return `Inhaltshinweis (aus Metadaten): ${core}.`;
+function synthesizeDescription(rec: Recommendation): string {
+  const motifText = rec.reasons
+    .map((r) => String(r.detail || ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("; ");
+
+  const subjectText = (rec.subjects || []).slice(0, 6).join(", ");
+
+  const partA = `Dieses Buch wurde empfohlen, weil es inhaltlich zu deinem Leseprofil passt.`;
+  const partB = motifText
+    ? `Besonders auffaellig sind folgende Ueberschneidungen: ${motifText}.`
+    : `Es zeigt thematische Ueberschneidungen mit deinen gut bewerteten Titeln.`;
+  const partC = subjectText
+    ? `Typische Themen sind: ${subjectText}.`
+    : `Die Empfehlung basiert auf Story-Mustern und bevorzugten Themen aus deiner Bibliothek.`;
+
+  return `${partA} ${partB} ${partC}`;
 }
 
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
@@ -870,7 +899,7 @@ function scoreCandidate(doc: OpenLibraryDoc, profile: Profile, storyProfile: Sto
   if (motifHits.length > 0) {
     reasons.push({
       label: "Story-Ähnlichkeit",
-      detail: `ähnlicher Erzählkern: ${motifHits.slice(0, 2).map((x) => `„${x.motif.replace(/_/g, " ")}“`).join(", ")}`,
+      detail: `ähnlicher Erzählkern: ${motifHits.slice(0, 2).map((x) => `„${MOTIF_LABEL_DE[x.motif] || x.motif.replace(/_/g, " ")}“`).join(", ")}`,
     });
   } else if (storyHits.length > 0) {
     reasons.push({
@@ -1295,9 +1324,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (d) out[idx].description = d;
     }
 
-    // Final fallback: never empty in UI.
+    // Final fallback: always provide a German content hint in UI.
     for (const rec of out) {
-      if (!rec.description) rec.description = synthesizeDescription(rec);
+      if (!rec.description) {
+        rec.description = synthesizeDescription(rec);
+        continue;
+      }
+
+      const desc = String(rec.description || "").trim();
+      if (!looksGerman(desc)) {
+        rec.description = synthesizeDescription(rec);
+      }
     }
 
     debug.candidatesAfterOwnedIsbnFilter = afterOwnedIsbn;
