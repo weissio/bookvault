@@ -12,12 +12,21 @@ model User {
   email     String    @unique
   passHash  String    @map("password")
   createdAt DateTime  @default(now())
+
   sessions  Session[]
   entries   LibraryEntry[]
+
+  // Recommendation tracking
+  recommendationRuns   RecommendationRun[]
+  recommendationItems  RecommendationItem[]
+  recommendationEvents RecommendationEvent[]
 }
 
 model Session {
-  id        String   @id
+  // IMPORTANT:
+  // We expose this as "token" in Prisma (and in code),
+  // but map it to the existing DB column "id" to avoid breaking the database.
+  token     String   @id @map("id")
   userId    Int
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
@@ -37,10 +46,96 @@ model LibraryEntry {
   rating      Int?
   notes       String?
 
+  // NOTE: remains String? for now (as in your current schema).
+  // We'll improve this later (e.g. Json + normalized tags), but not in this step.
   subjects    String?
   description String?
 
   createdAt   DateTime @default(now())
 
   @@unique([userId, isbn])
+}
+
+//
+// -----------------------------
+// Recommendation Tracking (USP)
+// -----------------------------
+//
+
+model RecommendationRun {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  seedMode    String   @default("liked")
+  minRating   Int      @default(4)
+  limit       Int      @default(25)
+  algoVersion String   @default("v1")
+
+  // optional: can store something like a stable hash of profile inputs
+  profileHash String?
+
+  createdAt   DateTime @default(now())
+
+  items       RecommendationItem[]
+
+  @@index([userId, createdAt])
+}
+
+model RecommendationItem {
+  id        Int      @id @default(autoincrement())
+  runId     Int
+  userId    Int
+
+  run       RecommendationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // "Work identity" to collapse translations/editions
+  // examples: "ol:/works/OL123W" | "wd:Q1212133" | "na:..."
+  workKey   String
+
+  // optional edition
+  isbn      String?
+  title     String
+  authors   String
+  coverUrl  String?
+
+  score     Float
+  rank      Int
+
+  // snapshot of "why" + subjects at the time of recommendation
+  reasonsJson  Json
+  subjectsJson Json
+
+  createdAt DateTime @default(now())
+
+  events   RecommendationEvent[]
+
+  @@index([userId, createdAt])
+  @@index([workKey])
+  @@index([runId])
+  @@unique([userId, workKey, runId])
+}
+
+model RecommendationEvent {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  itemId    Int?
+  item      RecommendationItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  workKey   String
+
+  // "shown" | "saved" | "dismissed" | "added_to_library" | "finished" | "rated"
+  event     String
+
+  // payload like { "rating": 9 } | { "status": "read" } | { "daysToFinish": 12 }
+  valueJson Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([workKey, event])
+  @@index([itemId])
 }
