@@ -215,6 +215,16 @@ const MOTIF_LABEL_DE: Record<string, string> = {
   books_literary_world: "Buecherwelt",
 };
 
+
+const MOTIF_EXPLAIN_DE: Record<string, string> = {
+  coming_of_age: "eine Phase des Aufbruchs und Reifens",
+  mentorship: "praegende Begegnungen zwischen juengeren und aelteren Figuren",
+  friendship: "enge Beziehungen und Freundschaft als zentrales Thema",
+  grief_loss: "Verlust, Trauer und den Umgang damit",
+  self_discovery: "innere Entwicklung und Selbstfindung",
+  books_literary_world: "eine starke Verbindung zur Welt der Buecher und Literatur",
+};
+
 function isGenericSubject(subject: string) {
   const n = norm(subject).replace(/\s+/g, " ");
   return GENERIC_SUBJECTS.has(n);
@@ -817,23 +827,23 @@ function looksGerman(text: string): boolean {
 }
 
 function synthesizeDescription(rec: Recommendation): string {
-  const motifText = rec.reasons
-    .map((r) => String(r.detail || ""))
-    .filter(Boolean)
-    .slice(0, 2)
-    .join("; ");
+  const motifs = rec.reasons
+    .filter((r) => r.label === "Story-Ähnlichkeit")
+    .flatMap((r) => {
+      const raw = String(r.detail || "");
+      return Object.keys(MOTIF_EXPLAIN_DE).filter((k) => raw.includes(k.replace(/_/g, " ")) || raw.includes(MOTIF_LABEL_DE[k] || ""));
+    });
 
-  const subjectText = (rec.subjects || []).slice(0, 6).join(", ");
+  const motifSentence = motifs.length
+    ? MOTIF_EXPLAIN_DE[motifs[0]] || "ein Erzaehlmuster, das gut zu deinem Profil passt"
+    : "ein Erzaehlmuster, das gut zu deinem Profil passt";
 
-  const partA = `Dieses Buch wurde empfohlen, weil es inhaltlich zu deinem Leseprofil passt.`;
-  const partB = motifText
-    ? `Besonders auffaellig sind folgende Ueberschneidungen: ${motifText}.`
-    : `Es zeigt thematische Ueberschneidungen mit deinen gut bewerteten Titeln.`;
-  const partC = subjectText
-    ? `Typische Themen sind: ${subjectText}.`
-    : `Die Empfehlung basiert auf Story-Mustern und bevorzugten Themen aus deiner Bibliothek.`;
+  const subjects = (rec.subjects || []).filter((x) => !isGenericSubject(x)).slice(0, 4);
+  const subjectSentence = subjects.length
+    ? `Typische Themen sind ${subjects.join(", ")}.`
+    : "Die Empfehlung orientiert sich an Motiven und Themen aus deinen gut bewerteten Buechern.";
 
-  return `${partA} ${partB} ${partC}`;
+  return `Dieses Buch koennte gut zu deinem Geschmack passen, weil es ${motifSentence} zeigt. ${subjectSentence}`;
 }
 
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
@@ -899,12 +909,12 @@ function scoreCandidate(doc: OpenLibraryDoc, profile: Profile, storyProfile: Sto
   if (motifHits.length > 0) {
     reasons.push({
       label: "Story-Ähnlichkeit",
-      detail: `ähnlicher Erzählkern: ${motifHits.slice(0, 2).map((x) => `„${MOTIF_LABEL_DE[x.motif] || x.motif.replace(/_/g, " ")}“`).join(", ")}`,
+      detail: `passt im Erzaehlkern zu: ${motifHits.slice(0, 2).map((x) => `„${MOTIF_LABEL_DE[x.motif] || x.motif.replace(/_/g, " ")}“`).join(", ")}`,
     });
   } else if (storyHits.length > 0) {
     reasons.push({
       label: "Story-Ähnlichkeit",
-      detail: `ähnliche Motive: ${storyHits.slice(0, 2).map((x) => `„${x.term}“`).join(", ")}`,
+      detail: `aehnliche Schwerpunkte: ${storyHits.slice(0, 2).map((x) => `„${x.term}“`).join(", ")}`,
     });
   }
 
