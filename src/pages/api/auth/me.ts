@@ -31,7 +31,7 @@ export default async function handler(
     }
 
     const session = await prisma.session.findUnique({
-      where: { id: sessionId },
+      where: { token: sessionId },
       select: { userId: true, expiresAt: true },
     });
 
@@ -41,7 +41,7 @@ export default async function handler(
 
     if (new Date(session.expiresAt).getTime() < Date.now()) {
       // session expired; optionally clean it up
-      await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
+      await prisma.session.delete({ where: { token: sessionId } }).catch(() => {});
       return res.status(200).json({ ok: true, user: null });
     }
 

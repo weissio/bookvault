@@ -18,14 +18,14 @@ async function requireUserId(req: NextApiRequest) {
   if (!sessionId) return null;
 
   const session = await prisma.session.findUnique({
-    where: { id: sessionId },
+    where: { token: sessionId },
     select: { userId: true, expiresAt: true },
   });
 
   if (!session) return null;
 
   if (new Date(session.expiresAt).getTime() < Date.now()) {
-    await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
+    await prisma.session.delete({ where: { token: sessionId } }).catch(() => {});
     return null;
   }
 

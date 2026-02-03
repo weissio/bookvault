@@ -27,7 +27,7 @@ async function getUserFromRequest(req: NextApiRequest) {
 
   const now = new Date();
   const session = await prisma.session.findUnique({
-    where: { id: String(sessionId) },
+    where: { token: String(sessionId) },
     select: {
       expiresAt: true,
       user: { select: { id: true, email: true } },

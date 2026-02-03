@@ -37,7 +37,7 @@ export default async function handler(
   try {
     const sessionId = getCookie(req, "bv_session");
     if (sessionId) {
-      await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
+      await prisma.session.delete({ where: { token: sessionId } }).catch(() => {});
     }
 
     res.setHeader("Set-Cookie", clearCookie("bv_session"));

@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import prisma from "@/server/db";
+import { prisma } from "@/server/db";
 
 type Reason = { label: string; detail: string };
 
@@ -20,6 +20,26 @@ type Profile = {
 };
 
 type DebugInfo = Record<string, any>;
+
+type OpenLibraryDoc = {
+  key?: string;
+  title?: string;
+  author_name?: string[];
+  isbn?: string[];
+  subject?: string[];
+};
+
+type OpenLibrarySearchCacheEntry = {
+  expiresAt: number;
+  docs: OpenLibraryDoc[];
+};
+
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_CACHE_MAX_ENTRIES = 120;
+const OPENLIBRARY_QUERY_CONCURRENCY = 4;
+const OWNED_WORK_LOOKUP_CONCURRENCY = 8;
+
+const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
 
 function jsonOk(res: NextApiResponse, data: any) {
   res.status(200).json({ ok: true, ...data });
@@ -66,21 +86,39 @@ function norm(s: string) {
   return (s || "")
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "") // diacritics
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[’'"]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
 
 function pickPrimaryAuthor(authors: string) {
-  // "A, B, C" -> "A"
-  const a = (authors || "").split(",")[0]?.trim() || "";
-  return a;
+  return (authors || "").split(",")[0]?.trim() || "";
 }
 
 function authorLastName(author: string) {
   const parts = (author || "").trim().split(/\s+/);
   return parts.length ? parts[parts.length - 1] : "";
+}
+
+async function pMapLimit<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>) {
+  if (items.length === 0) return [] as R[];
+
+  const out: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex;
+      nextIndex += 1;
+      if (i >= items.length) return;
+      out[i] = await mapper(items[i]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, () => worker());
+  await Promise.all(workers);
+  return out;
 }
 
 /** -----------------------------
@@ -111,123 +149,43 @@ function coverFromIsbn(isbn: string) {
   return `https://covers.openlibrary.org/b/isbn/${encodeURIComponent(isbn)}-M.jpg`;
 }
 
+// Used for owned entries (small number), but kept global for cross-request wins.
+const olIsbnWorkCache = new Map<string, string | null>();
+
 async function openLibraryIsbnToWorkKey(isbn: string): Promise<string | null> {
-  // https://openlibrary.org/isbn/{isbn}.json -> works[0].key
+  const key = String(isbn || "").trim();
+  if (!key) return null;
+  if (olIsbnWorkCache.has(key)) return olIsbnWorkCache.get(key)!;
+
   try {
-    const j = await fetchJson(`https://openlibrary.org/isbn/${encodeURIComponent(isbn)}.json`, 12000);
+    const j = await fetchJson(`https://openlibrary.org/isbn/${encodeURIComponent(key)}.json`, 12000);
     const works = (j?.works || []) as Array<{ key?: string }>;
     const wk = works?.[0]?.key;
-    return typeof wk === "string" ? wk : null;
+    const out = typeof wk === "string" ? wk : null;
+    olIsbnWorkCache.set(key, out);
+    return out;
   } catch {
+    olIsbnWorkCache.set(key, null);
     return null;
   }
 }
 
-async function openLibraryWorkToCanonicalKey(workKey: string): Promise<string | null> {
-  // Use the work key itself as canonical key (if present)
-  // Some installations used additional canonicalization, but here: stable = workKey
-  return workKey || null;
-}
-
-/** -----------------------------
- *  Wikidata fallback for "same work"
- *  - Robust against titles with/without leading articles (The/Die/Der/Das...)
- *  - Tries multiple title variants and both DE/EN.
- *  - Returns a Q-ID string like "Q1212133" or null.
- *  ----------------------------- */
-const wdCache = new Map<string, string | null>();
-
-function stripLeadingArticle(t: string) {
-  const s = (t || "").trim();
-  return s
-    .replace(/^(the|a|an|der|die|das|ein|eine|el|la|los|las|le|les)\s+/i, "")
-    .trim();
-}
-
-function titleVariants(title: string, lang: "de" | "en") {
-  const base = (title || "").trim();
-  const noArt = stripLeadingArticle(base);
-
-  const vars = new Set<string>();
-  if (base) vars.add(base);
-  if (noArt) vars.add(noArt);
-
-  // Many EN Wikidata labels include "The ..."
-  if (lang === "en") {
-    const withThe = base.toLowerCase().startsWith("the ") ? base : `The ${base}`;
-    const withTheNoArt = noArt.toLowerCase().startsWith("the ") ? noArt : `The ${noArt}`;
-    if (withThe.trim()) vars.add(withThe.trim());
-    if (withTheNoArt.trim()) vars.add(withTheNoArt.trim());
-  }
-
-  return Array.from(vars).filter(Boolean);
-}
-
-async function wikidataSearchWorkQid(title: string, lang: "de" | "en", authorHint?: string) {
-  const cacheKey = `${lang}|${title}|${authorHint || ""}`;
-  if (wdCache.has(cacheKey)) return wdCache.get(cacheKey)!;
-
-  const a = norm(authorHint || "");
-  const last = norm(authorLastName(authorHint || ""));
-
-  const variants = titleVariants(title, lang);
-
-  try {
-    for (const v of variants) {
-      const params = new URLSearchParams();
-      params.set("action", "wbsearchentities");
-      params.set("format", "json");
-      params.set("limit", "8");
-      params.set("language", lang);
-      params.set("search", v);
-
-      const url = `https://www.wikidata.org/w/api.php?${params.toString()}`;
-
-      const j = await fetchJson(url, 15000, { Accept: "application/json" });
-      const results = (j?.search || []) as Array<{
-        id?: string;
-        label?: string;
-        description?: string;
-      }>;
-
-      const candidates = results.filter((r) => r?.id && typeof r.id === "string");
-      if (!candidates.length) continue;
-
-      const scored = candidates
-        .map((r) => {
-          const blob = norm(`${r.label || ""} ${r.description || ""}`);
-          let s = 0;
-          if (a && blob.includes(a)) s += 3;
-          if (last && blob.includes(last)) s += 2;
-          if (blob.includes("novel") || blob.includes("roman") || blob.includes("book")) s += 1;
-          return { id: r.id as string, score: s };
-        })
-        .sort((x, y) => y.score - x.score);
-
-      const best = scored[0]?.id ?? null;
-      wdCache.set(cacheKey, best);
-      return best;
-    }
-
-    wdCache.set(cacheKey, null);
-    return null;
-  } catch {
-    wdCache.set(cacheKey, null);
-    return null;
-  }
-}
-
-async function wikidataWorkKeyForBook(title: string, authors: string) {
-  const a = pickPrimaryAuthor(authors);
-
-  // Try DE then EN; each uses robust title variants
-  const de = await wikidataSearchWorkQid(title, "de", a);
-  if (de) return `wd:${de}`;
-
-  const en = await wikidataSearchWorkQid(title, "en", a);
-  if (en) return `wd:${en}`;
-
+function workKeyFromDoc(doc: OpenLibraryDoc): string | null {
+  const k = doc?.key;
+  if (typeof k === "string" && k.startsWith("/works/")) return k;
   return null;
+}
+
+function cacheSet(key: string, docs: OpenLibraryDoc[]) {
+  if (openLibrarySearchCache.size >= SEARCH_CACHE_MAX_ENTRIES) {
+    const oldestKey = openLibrarySearchCache.keys().next().value as string | undefined;
+    if (oldestKey) openLibrarySearchCache.delete(oldestKey);
+  }
+
+  openLibrarySearchCache.set(key, {
+    expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+    docs,
+  });
 }
 
 /** -----------------------------
@@ -238,13 +196,12 @@ function computeProfile(entries: any[], minRating: number): Profile {
     (e) => e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating
   );
 
-  // subjects weighting
   const subjWeights = new Map<string, number>();
   const authWeights = new Map<string, number>();
 
   for (const e of liked) {
     const rating = typeof e.rating === "number" ? e.rating : minRating;
-    const w = clamp(rating, minRating, 10); // 4..10
+    const w = clamp(rating, minRating, 10);
 
     const subjects: string[] = Array.isArray(e.subjects) ? e.subjects : [];
     for (const s of subjects) {
@@ -269,47 +226,59 @@ function computeProfile(entries: any[], minRating: number): Profile {
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 3);
 
-  return {
-    likedCount: liked.length,
-    topSubjects,
-    topAuthors,
-  };
+  return { likedCount: liked.length, topSubjects, topAuthors };
 }
 
 /** -----------------------------
  *  Candidate gathering (OpenLibrary)
  *  ----------------------------- */
-async function openLibraryCandidatesBySubject(subject: string, limit: number) {
-  // subject API: https://openlibrary.org/subjects/{subject}.json?limit=...
-  // But subjects often contain commas/spaces; OpenLibrary expects slug-ish.
-  // We keep it simple: use search.json by subject term
+async function openLibrarySearch(query: string, limit: number, debug: DebugInfo, type: string): Promise<OpenLibraryDoc[]> {
   const params = new URLSearchParams();
-  params.set("q", subject);
+  params.set("q", query);
   params.set("mode", "everything");
   params.set("limit", String(limit));
   params.set("fields", "title,author_name,isbn,subject,cover_i,edition_key,key");
 
   const url = `https://openlibrary.org/search.json?${params.toString()}`;
-  const j = await fetchJson(url, 15000);
-  const docs = (j?.docs || []) as any[];
-  return docs;
+
+  const cached = openLibrarySearchCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) {
+    if (!Array.isArray(debug.openLibraryCalls)) debug.openLibraryCalls = [];
+    debug.openLibraryCalls.push({ type, q: query, limit, got: cached.docs.length, cached: true });
+    return cached.docs;
+  }
+
+  try {
+    const j = await fetchJson(url, 15000);
+    const docs = (j?.docs || []) as OpenLibraryDoc[];
+
+    cacheSet(url, docs);
+
+    if (!Array.isArray(debug.openLibraryCalls)) debug.openLibraryCalls = [];
+    debug.openLibraryCalls.push({ type, q: query, limit, got: docs.length, cached: false });
+
+    return docs;
+  } catch (e: any) {
+    if (!Array.isArray(debug.openLibraryCalls)) debug.openLibraryCalls = [];
+    debug.openLibraryCalls.push({ type, q: query, limit, got: 0, error: e?.message ?? "search failed" });
+    return [];
+  }
 }
 
-function bestIsbnFromDoc(doc: any): string | null {
+function bestIsbnFromDoc(doc: OpenLibraryDoc): string | null {
   const isbns: string[] = Array.isArray(doc?.isbn) ? doc.isbn : [];
-  // Prefer ISBN-13
   const isbn13 = isbns.find((x) => typeof x === "string" && x.replace(/[^0-9]/g, "").length === 13);
   const isbn10 = isbns.find((x) => typeof x === "string" && x.replace(/[^0-9Xx]/g, "").length === 10);
   const pick = isbn13 || isbn10;
   return pick ? pick.replace(/[^0-9Xx]/g, "") : null;
 }
 
-function authorsFromDoc(doc: any): string {
+function authorsFromDoc(doc: OpenLibraryDoc): string {
   const arr: string[] = Array.isArray(doc?.author_name) ? doc.author_name : [];
   return arr.slice(0, 3).join(", ");
 }
 
-function subjectsFromDoc(doc: any): string[] {
+function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
   const arr: string[] = Array.isArray(doc?.subject) ? doc.subject : [];
   return arr.slice(0, 12);
 }
@@ -317,34 +286,30 @@ function subjectsFromDoc(doc: any): string[] {
 /** -----------------------------
  *  Scoring
  *  ----------------------------- */
-function scoreCandidate(doc: any, profile: Profile) {
+function scoreCandidate(doc: OpenLibraryDoc, profile: Profile) {
   const docSubjects: string[] = subjectsFromDoc(doc);
   const docAuthors = (Array.isArray(doc?.author_name) ? doc.author_name : []) as string[];
 
   const topSubj = profile.topSubjects.map((s) => s.subject);
   const topAuth = profile.topAuthors.map((a) => a.author);
 
-  // subject overlap score
   const set = new Set(docSubjects.map((s) => norm(s)));
-  let subjHits: string[] = [];
+  const subjHits: string[] = [];
   let score = 0;
 
   for (const s of topSubj) {
     if (set.has(norm(s))) {
-      score += 5; // strong signal
+      score += 5;
       subjHits.push(s);
     }
   }
 
-  // author similarity
   const docAuthNorm = new Set(docAuthors.map((a) => norm(a)));
   const authHit = topAuth.find((a) => docAuthNorm.has(norm(a)));
   if (authHit) score += 7;
 
-  // mild boost if has many subjects
   score += Math.min(3, docSubjects.length / 6);
 
-  // Reasons (transparent)
   const reasons: Reason[] = [];
   if (subjHits.length) {
     reasons.push({
@@ -361,7 +326,7 @@ function scoreCandidate(doc: any, profile: Profile) {
   if (authHit) {
     reasons.push({
       label: "Autor-Ähnlichkeit",
-      detail: `Autor:in taucht in deinem Profil stark auf`,
+      detail: "Autor:in taucht in deinem Profil stark auf",
     });
   }
 
@@ -369,86 +334,52 @@ function scoreCandidate(doc: any, profile: Profile) {
 }
 
 /** -----------------------------
- *  Dedup / Canonical keys
+ *  Dedup / Owned keys
  *  ----------------------------- */
 async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
-  // 1) ISBN set
   const ownedIsbn = new Set<string>();
-  for (const e of entries) {
-    if (e?.isbn) ownedIsbn.add(String(e.isbn));
+  const normalizedIsbns = uniq(
+    entries
+      .map((e) => String(e?.isbn || "").trim())
+      .filter(Boolean)
+  );
+
+  for (const isbn of normalizedIsbns) {
+    ownedIsbn.add(isbn);
   }
 
-  // 2) OpenLibrary work canonical keys
-  const ownedOLWork = new Set<string>();
-  let tried = 0;
+  const ownedWork = new Set<string>();
   let succeeded = 0;
 
-  for (const e of entries) {
-    const isbn = String(e?.isbn || "");
-    if (!isbn) continue;
-    tried++;
-    const wk = await openLibraryIsbnToWorkKey(isbn);
-    if (wk) {
-      succeeded++;
-      const canon = await openLibraryWorkToCanonicalKey(wk);
-      if (canon) ownedOLWork.add(`ol:${canon}`);
-    }
+  const results = await pMapLimit(normalizedIsbns, OWNED_WORK_LOOKUP_CONCURRENCY, async (isbn) => {
+    return openLibraryIsbnToWorkKey(isbn);
+  });
+
+  for (const wk of results) {
+    if (!wk) continue;
+    succeeded++;
+    ownedWork.add(wk);
   }
 
-  debug.ownedWorkLookupsTried = tried;
+  debug.ownedWorkLookupsTried = normalizedIsbns.length;
   debug.ownedWorkLookupsSucceeded = succeeded;
+  debug.ownedWorkKeysCount = ownedWork.size;
 
-  // 3) Wikidata fallback keys (title+author)
-  const ownedWDWork = new Set<string>();
-  let wdTried = 0;
-  let wdHit = 0;
-
-  for (const e of entries) {
-    const title = String(e?.title || "").trim();
-    const authors = String(e?.authors || "").trim();
-    if (!title) continue;
-    wdTried++;
-    const wdKey = await wikidataWorkKeyForBook(title, authors);
-    if (wdKey) {
-      wdHit++;
-      ownedWDWork.add(wdKey);
-    }
-  }
-
-  debug.ownedWikidataTried = wdTried;
-  debug.ownedWikidataHit = wdHit;
-
-  return { ownedIsbn, ownedOLWork, ownedWDWork };
-}
-
-async function canonicalKeyForCandidate(rec: Recommendation, debug: DebugInfo) {
-  // Prefer OpenLibrary work canonical
-  const wk = await openLibraryIsbnToWorkKey(rec.isbn);
-  if (wk) {
-    const canon = await openLibraryWorkToCanonicalKey(wk);
-    if (canon) return `ol:${canon}`;
-  }
-
-  // Fallback to Wikidata title+author
-  const wd = await wikidataWorkKeyForBook(rec.title, rec.authors);
-  if (wd) return wd;
-
-  // last resort: normalized title+author
-  const a = authorLastName(pickPrimaryAuthor(rec.authors));
-  return `na:${norm(rec.title)}|${norm(a)}`;
+  return { ownedIsbn, ownedWork };
 }
 
 /** -----------------------------
  *  Handler
  *  ----------------------------- */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const startedAt = Date.now();
   try {
     const user = await getSessionUser(req);
     if (!user) return jsonErr(res, 401, "Not authenticated");
 
     const limit = clamp(parseInt(String(req.query.limit ?? "25"), 10) || 25, 1, 50);
     const minRating = clamp(parseInt(String(req.query.minRating ?? "4"), 10) || 4, 0, 10);
-    const seedMode = String(req.query.seedMode ?? "liked"); // currently only liked
+    const seedMode = String(req.query.seedMode ?? "liked");
     const debugMode = String(req.query.debug ?? "") === "1";
 
     const debug: DebugInfo = {};
@@ -469,11 +400,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
     });
 
-    const profile = computeProfile(entries, minRating);
-    debug.profile = profile;
+    debug.entryCount = entries.length;
 
-    // If no liked books, return empty rec list (transparent)
+    const profile = computeProfile(entries, minRating);
+    debug.likedCount = profile.likedCount;
+    debug.topSubjectsCount = profile.topSubjects.length;
+    debug.topAuthorsCount = profile.topAuthors.length;
+
     if (profile.likedCount === 0) {
+      debug.totalMs = Date.now() - startedAt;
       return jsonOk(res, {
         user,
         profile,
@@ -482,25 +417,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // Build owned keys
-    const { ownedIsbn, ownedOLWork, ownedWDWork } = await buildOwnedKeys(entries, debug);
-    debug.ownedWorkKeysCount = ownedOLWork.size;
-    debug.ownedWikidataKeysCount = ownedWDWork.size;
+    const { ownedIsbn, ownedWork } = await buildOwnedKeys(entries, debug);
+    debug.ownedWorkCanonCount = ownedWork.size;
 
-    // Gather candidates from OpenLibrary based on top subjects
     const topSubjects = profile.topSubjects.map((x) => x.subject);
-    const docs: any[] = [];
+    const topAuthors = profile.topAuthors.map((x) => x.author);
 
-    // Keep requests bounded
-    const perSubject = clamp(Math.ceil(120 / Math.max(1, topSubjects.length)), 10, 40);
+    const docs: OpenLibraryDoc[] = [];
+    debug.openLibraryCalls = [];
 
-    for (const s of topSubjects) {
-      const c = await openLibraryCandidatesBySubject(s, perSubject);
-      docs.push(...c);
+    const subjectLimit = clamp(Math.ceil(limit), 10, 40);
+    const authorLimit = clamp(Math.ceil(limit * 0.6), 8, 25);
+
+    const subjectQueries = topSubjects.map((s) => ({ q: `subject:"${s}"`, type: "subject" as const, l: subjectLimit }));
+    const authorQueries = topAuthors.map((a) => ({ q: `author:"${a}"`, type: "author" as const, l: authorLimit }));
+    const allQueries = [...subjectQueries, ...authorQueries];
+
+    const queryResults = await pMapLimit(allQueries, OPENLIBRARY_QUERY_CONCURRENCY, async (entry) => {
+      return openLibrarySearch(entry.q, entry.l, debug, entry.type);
+    });
+
+    for (const chunk of queryResults) {
+      docs.push(...chunk);
     }
 
-    // Score + transform
-    const scored: Array<{ rec: Recommendation; raw: any }> = [];
+    debug.docsTotal = docs.length;
+
+    const scored: Array<{ rec: Recommendation; workKey: string | null }> = [];
+
     for (const doc of docs) {
       const isbn = bestIsbnFromDoc(doc);
       if (!isbn) continue;
@@ -514,8 +458,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const { score, reasons } = scoreCandidate(doc, profile);
       if (score <= 0) continue;
 
+      const wk = workKeyFromDoc(doc);
+
       scored.push({
-        raw: doc,
+        workKey: wk,
         rec: {
           isbn,
           title,
@@ -528,46 +474,73 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // Sort by score descending
     scored.sort((a, b) => b.rec.score - a.rec.score);
 
-    // Dedup + filter out owned items:
+    debug.candidatesSeen = scored.length;
+    debug.candidatesWithIsbn = scored.length;
+
+    debug.candidateWorkLookupsTried = 0;
+    debug.candidateWorkLookupsSucceeded = 0;
+    debug.candidateWorkCanonLookupsTried = 0;
+    debug.candidateWorkCanonLookupsSucceeded = 0;
+
+    debug.editionLookupsTried = 0;
+    debug.editionLookupsSucceeded = 0;
+    debug.isbnResolvedViaEditionKey = 0;
+
     const out: Recommendation[] = [];
-    const seenCanon = new Set<string>();
+
+    let afterOwnedIsbn = 0;
+    let afterOwnedWork = 0;
+    let afterTitle = 0;
+
     const seenIsbn = new Set<string>();
+    const seenWorkOrIsbn = new Set<string>();
+    const seenCanonical = new Set<string>();
 
-    let canonTried = 0;
-    let canonOlHit = 0;
-    let canonWdHit = 0;
+    function cheapCanonicalKey(r: Recommendation) {
+      const aLast = authorLastName(pickPrimaryAuthor(r.authors));
+      return `na:${norm(r.title)}|${norm(aLast)}`;
+    }
 
-    for (const s of scored) {
+    for (const item of scored) {
       if (out.length >= limit) break;
 
-      const r = s.rec;
+      const r = item.rec;
+      const wk = item.workKey;
+
       if (ownedIsbn.has(r.isbn)) continue;
       if (seenIsbn.has(r.isbn)) continue;
+      afterOwnedIsbn++;
 
-      canonTried++;
-      const ck = await canonicalKeyForCandidate(r, debug);
+      if (wk && ownedWork.has(wk)) continue;
+      afterOwnedWork++;
 
-      if (ck.startsWith("ol:")) canonOlHit++;
-      if (ck.startsWith("wd:")) canonWdHit++;
+      const workOrIsbnKey = wk ? `wk:${wk}` : `isbn:${r.isbn}`;
+      if (seenWorkOrIsbn.has(workOrIsbnKey)) continue;
+      seenWorkOrIsbn.add(workOrIsbnKey);
 
-      // If candidate work exists in owned works (OL) or owned WD works, skip
-      if (ownedOLWork.has(ck) || ownedWDWork.has(ck)) continue;
+      const ck = wk ? `wk:${wk}` : cheapCanonicalKey(r);
+      if (seenCanonical.has(ck)) continue;
+      seenCanonical.add(ck);
 
-      // Also skip duplicates among recommendations
-      if (seenCanon.has(ck)) continue;
-
+      afterTitle++;
       seenIsbn.add(r.isbn);
-      seenCanon.add(ck);
       out.push(r);
     }
 
-    debug.candidateCanonTried = canonTried;
-    debug.candidateCanonOlHit = canonOlHit;
-    debug.candidateCanonWdHit = canonWdHit;
-    debug.uniqueByCanonicalOrWorkOrIsbn = seenCanon.size;
+    debug.candidatesAfterOwnedIsbnFilter = afterOwnedIsbn;
+    debug.candidatesAfterOwnedWorkFilter = afterOwnedWork;
+    debug.candidatesAfterTitleFilter = afterTitle;
+
+    debug.uniqueByWorkOrIsbn = seenWorkOrIsbn.size;
+    debug.uniqueByCanonicalOrWorkOrIsbn = seenCanonical.size;
+
+    debug.candidatesAfterOwnedCanonicalFilter = afterTitle;
+    debug.profileSourceCount = profile.likedCount;
+    debug.readCount = entries.filter((e) => e.status === "read").length;
+    debug.diversifiedDroppedByAuthor = 0;
+    debug.totalMs = Date.now() - startedAt;
 
     return jsonOk(res, {
       user,

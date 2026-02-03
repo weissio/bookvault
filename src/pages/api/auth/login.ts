@@ -61,7 +61,7 @@ export default async function handler(
 
     await prisma.session.create({
       data: {
-        id: sessionId,
+        token: sessionId,
         userId: user.id,
         expiresAt,
       },
