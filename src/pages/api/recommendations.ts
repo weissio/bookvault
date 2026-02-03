@@ -4,6 +4,8 @@ import { prisma } from "@/server/db";
 type Reason = { label: string; detail: string };
 
 type Recommendation = {
+  recId: string;
+  workKey: string | null;
   isbn: string;
   title: string;
   authors: string;
@@ -496,6 +498,56 @@ async function resolveCanonicalKey(workKey: string | null, title: string, author
   return null;
 }
 
+type PreferenceSignals = {
+  likedKeys: Set<string>;
+  dislikedKeys: Set<string>;
+};
+
+async function loadPreferenceSignals(userId: number): Promise<PreferenceSignals> {
+  const rows = await prisma.recommendationEvent.findMany({
+    where: {
+      userId,
+      event: { in: ["pref_like", "pref_dislike"] },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 1000,
+    select: {
+      workKey: true,
+      event: true,
+    },
+  });
+
+  const likedKeys = new Set<string>();
+  const dislikedKeys = new Set<string>();
+  const seen = new Set<string>();
+
+  for (const r of rows) {
+    const key = String(r.workKey || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+
+    if (r.event === "pref_like") likedKeys.add(key);
+    if (r.event === "pref_dislike") dislikedKeys.add(key);
+  }
+
+  return { likedKeys, dislikedKeys };
+}
+
+function buildPreferenceKeys(
+  resolvedCanonicalKey: string | null,
+  resolvedWorkKey: string | null,
+  authorKey: string,
+  tKey: string,
+  isbn: string
+): string[] {
+  const out = new Set<string>();
+  if (resolvedCanonicalKey) out.add(resolvedCanonicalKey);
+  if (resolvedWorkKey) out.add(`ol:${resolvedWorkKey}`);
+  if (authorKey && tKey) out.add(`na:${authorKey}|${tKey}`);
+  if (isbn) out.add(`isbn:${isbn}`);
+  return Array.from(out);
+}
+
 function workKeyFromDoc(doc: OpenLibraryDoc): string | null {
   const k = doc?.key;
   if (typeof k === "string" && k.startsWith("/works/")) return k;
@@ -889,6 +941,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (ckey) ownedCanonicalResolved.add(ckey);
     }
 
+    const preferenceSignals = await loadPreferenceSignals(user.id);
+
     const topSubjects = profile.topSubjects.map((x) => x.subject);
     const topAuthors = profile.topAuthors.map((x) => x.author);
 
@@ -932,6 +986,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       scored.push({
         workKey: wk,
         rec: {
+          recId: `seed:${isbn}`,
+          workKey: wk,
           isbn,
           title,
           authors,
@@ -968,6 +1024,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let candidateWorkIsbnVerificationTried = 0;
     let candidateWorkIsbnVerificationHit = 0;
     let candidateCanonicalResolvedHit = 0;
+    let droppedByPreferenceDislike = 0;
+    let boostedByPreferenceLike = 0;
 
     const seenIsbn = new Set<string>();
     const seenWorkOrIsbn = new Set<string>();
@@ -988,7 +1046,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (const item of scored) {
       if (out.length >= limit) break;
 
-      const r = item.rec;
+      const r: Recommendation = { ...item.rec, recId: "", workKey: item.workKey };
       const wk = item.workKey;
       const authorKey = primaryAuthorKey(r.authors);
       const tKey = titleTokenKey(r.title);
@@ -1025,6 +1083,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           candidateCanonicalResolvedHit++;
           if (ownedCanonicalResolved.has(resolvedCanonicalKey)) continue;
         }
+      }
+
+      const preferenceKeys = buildPreferenceKeys(
+        resolvedCanonicalKey,
+        resolvedWorkKey,
+        authorKey,
+        tKey,
+        r.isbn
+      );
+
+      if (preferenceKeys.some((k) => preferenceSignals.dislikedKeys.has(k))) {
+        droppedByPreferenceDislike++;
+        continue;
+      }
+
+      if (preferenceKeys.some((k) => preferenceSignals.likedKeys.has(k))) {
+        boostedByPreferenceLike++;
+        r.score += 8;
+        r.reasons = [
+          { label: "Deine Präferenz", detail: "passt zu mir (vorher markiert)" },
+          ...r.reasons,
+        ].slice(0, 3);
       }
 
       if (ownedIsbn.has(r.isbn)) continue;
@@ -1071,6 +1151,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       afterTitle++;
       seenIsbn.add(r.isbn);
+      r.workKey = resolvedWorkKey;
+      r.recId = resolvedCanonicalKey || (resolvedWorkKey ? `wk:${resolvedWorkKey}` : `isbn:${r.isbn}`);
       out.push(r);
     }
 
@@ -1091,6 +1173,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.candidateWorkIsbnVerificationHit = candidateWorkIsbnVerificationHit;
     debug.candidateCanonicalResolvedHit = candidateCanonicalResolvedHit;
     debug.ownedCanonicalResolvedCount = ownedCanonicalResolved.size;
+    debug.preferenceLikedCount = preferenceSignals.likedKeys.size;
+    debug.preferenceDislikedCount = preferenceSignals.dislikedKeys.size;
+    debug.droppedByPreferenceDislike = droppedByPreferenceDislike;
+    debug.boostedByPreferenceLike = boostedByPreferenceLike;
     debug.totalMs = Date.now() - startedAt;
 
     return jsonOk(res, {

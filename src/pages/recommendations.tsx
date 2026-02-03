@@ -35,6 +35,10 @@ type AddResponse =
   | { ok: true; entry: any }
   | { ok: false; error: string };
 
+type FeedbackResponse =
+  | { ok: true; key: string; action: "like" | "dislike" }
+  | { ok: false; error: string };
+
 function nowId() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
@@ -60,6 +64,8 @@ export default function RecommendationsPage() {
   const [data, setData] = useState<RecResponse | null>(null);
   // ✅ saved by recId (not ISBN) so editions/dupes don't cause weird UI behavior
   const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [preference, setPreference] = useState<Record<string, "like" | "dislike">>({});
+  const [prefLoading, setPrefLoading] = useState<Record<string, boolean>>({});
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastTimer = useRef<Record<string, any>>({});
@@ -137,6 +143,43 @@ export default function RecommendationsPage() {
       pushToast("success", `Gespeichert ✓  ${item.title}`);
     } catch (e: any) {
       pushToast("error", e?.message ?? "Speichern fehlgeschlagen.");
+    }
+  }
+
+  async function sendPreference(item: RecItem, action: "like" | "dislike") {
+    if (!user) {
+      pushToast("info", "Bitte einloggen, um Präferenzen zu speichern.");
+      return;
+    }
+
+    setPrefLoading((p) => ({ ...p, [item.recId]: true }));
+    try {
+      const r = await fetch("/api/recommendation-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recId: item.recId,
+          workKey: item.workKey,
+          isbn: item.isbn,
+          title: item.title,
+          authors: item.authors,
+          action,
+        }),
+      });
+
+      const j = (await r.json()) as FeedbackResponse;
+      if (!j.ok) {
+        pushToast("error", j.error || "Feedback speichern fehlgeschlagen.");
+        return;
+      }
+
+      setPreference((p) => ({ ...p, [item.recId]: action }));
+      if (action === "like") pushToast("success", `Passt zu mir ✓  ${item.title}`);
+      if (action === "dislike") pushToast("info", `Eher nicht ✓  ${item.title}`);
+    } catch (e: any) {
+      pushToast("error", e?.message ?? "Feedback speichern fehlgeschlagen.");
+    } finally {
+      setPrefLoading((p) => ({ ...p, [item.recId]: false }));
     }
   }
 
@@ -467,23 +510,61 @@ export default function RecommendationsPage() {
                     <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 800 }}>Score</div>
                     <div style={{ fontWeight: 900 }}>{x.score.toFixed(1)}</div>
 
-                    <button
-                      disabled={!!saved[x.recId]}
-                      onClick={() => void saveToLibrary(x)}
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.18)",
-                        background: saved[x.recId] ? "rgba(255,255,255,0.08)" : "transparent",
-                        cursor: saved[x.recId] ? "default" : "pointer",
-                        fontWeight: 900,
-                        opacity: saved[x.recId] ? 0.7 : 1,
-                        minWidth: 170,
-                      }}
-                      title="In deine Bibliothek speichern"
-                    >
-                      {saved[x.recId] ? "Gespeichert ✓" : "In Bibliothek speichern"}
-                    </button>
+                    <div style={{ display: "grid", gap: 6, width: "100%" }}>
+                      <button
+                        disabled={!!prefLoading[x.recId]}
+                        onClick={() => void sendPreference(x, "like")}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.18)",
+                          background: preference[x.recId] === "like" ? "rgba(76,175,80,0.25)" : "transparent",
+                          cursor: prefLoading[x.recId] ? "default" : "pointer",
+                          fontWeight: 900,
+                          opacity: prefLoading[x.recId] ? 0.7 : 1,
+                          minWidth: 170,
+                        }}
+                        title="Präferenzsignal vor dem Lesen"
+                      >
+                        {preference[x.recId] === "like" ? "Passt zu mir ✓" : "Passt zu mir"}
+                      </button>
+
+                      <button
+                        disabled={!!prefLoading[x.recId]}
+                        onClick={() => void sendPreference(x, "dislike")}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.18)",
+                          background: preference[x.recId] === "dislike" ? "rgba(244,67,54,0.24)" : "transparent",
+                          cursor: prefLoading[x.recId] ? "default" : "pointer",
+                          fontWeight: 900,
+                          opacity: prefLoading[x.recId] ? 0.7 : 1,
+                          minWidth: 170,
+                        }}
+                        title="Präferenzsignal vor dem Lesen"
+                      >
+                        {preference[x.recId] === "dislike" ? "Eher nicht ✓" : "Eher nicht"}
+                      </button>
+
+                      <button
+                        disabled={!!saved[x.recId]}
+                        onClick={() => void saveToLibrary(x)}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.18)",
+                          background: saved[x.recId] ? "rgba(255,255,255,0.08)" : "transparent",
+                          cursor: saved[x.recId] ? "default" : "pointer",
+                          fontWeight: 900,
+                          opacity: saved[x.recId] ? 0.7 : 1,
+                          minWidth: 170,
+                        }}
+                        title="In deine Bibliothek speichern"
+                      >
+                        {saved[x.recId] ? "Gespeichert ✓" : "In Bibliothek speichern"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))
