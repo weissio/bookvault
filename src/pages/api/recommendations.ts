@@ -38,6 +38,7 @@ const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_CACHE_MAX_ENTRIES = 120;
 const OPENLIBRARY_QUERY_CONCURRENCY = 4;
 const OWNED_WORK_LOOKUP_CONCURRENCY = 8;
+const MAX_RECS_PER_PRIMARY_AUTHOR = 1;
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
 
@@ -280,6 +281,51 @@ function computeProfile(entries: any[], minRating: number): Profile {
 /** -----------------------------
  *  Candidate gathering (OpenLibrary)
  *  ----------------------------- */
+async function openLibraryWorkKeyByTitleAuthor(title: string, authors: string): Promise<string | null> {
+  const t = String(title || "").trim();
+  const a = String(authors || "").trim();
+  if (!t) return null;
+
+  const query = [t, a].filter(Boolean).join(" ");
+  if (!query) return null;
+
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("limit", "6");
+  params.set("fields", "key,title,author_name");
+
+  try {
+    const url = `https://openlibrary.org/search.json?${params.toString()}`;
+    const j = await fetchJson(url, 12000);
+    const docs = Array.isArray(j?.docs) ? (j.docs as OpenLibraryDoc[]) : [];
+
+    const targetAuthor = primaryAuthorKey(authors);
+    for (const d of docs) {
+      const wk = workKeyFromDoc(d);
+      if (!wk) continue;
+
+      const candAuthors = authorsFromDoc(d);
+      const candAuthor = primaryAuthorKey(candAuthors);
+      if (targetAuthor && candAuthor && targetAuthor !== candAuthor) continue;
+
+      const candTitle = String(d.title || "").trim();
+      if (!candTitle) continue;
+      if (!isTitleNearDuplicateSameAuthor(t, candTitle) && titleTokenKey(t) !== titleTokenKey(candTitle)) continue;
+
+      return wk;
+    }
+
+    // fallback: first work key, even if fuzzy match was weak
+    for (const d of docs) {
+      const wk = workKeyFromDoc(d);
+      if (wk) return wk;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function openLibrarySearch(query: string, limit: number, debug: DebugInfo, type: string): Promise<OpenLibraryDoc[]> {
   const params = new URLSearchParams();
   params.set("q", query);
@@ -402,10 +448,10 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   for (const e of entries) {
     const title = String(e?.title || "").trim();
     const authorKey = primaryAuthorKey(String(e?.authors || ""));
-    const titleKey = titleTokenKey(title);
-    if (!titleKey) continue;
+    const tKey = titleTokenKey(title);
+    if (!tKey) continue;
 
-    ownedCanonical.add(`${authorKey}|${titleKey}`);
+    ownedCanonical.add(`${authorKey}|${tKey}`);
     if (!authorKey) continue;
 
     const arr = ownedTitlesByPrimaryAuthor.get(authorKey) ?? [];
@@ -414,20 +460,48 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   }
 
   const ownedWork = new Set<string>();
-  let succeeded = 0;
 
-  const results = await pMapLimit(normalizedIsbns, OWNED_WORK_LOOKUP_CONCURRENCY, async (isbn) => {
-    return openLibraryIsbnToWorkKey(isbn);
+  const byIsbn = await pMapLimit(normalizedIsbns, OWNED_WORK_LOOKUP_CONCURRENCY, async (isbn) => {
+    const wk = await openLibraryIsbnToWorkKey(isbn);
+    return { isbn, wk };
   });
 
-  for (const wk of results) {
-    if (!wk) continue;
-    succeeded++;
-    ownedWork.add(wk);
+  let succeeded = 0;
+  const wkByIsbn = new Map<string, string | null>();
+  for (const r of byIsbn) {
+    wkByIsbn.set(r.isbn, r.wk);
+    if (r.wk) {
+      succeeded++;
+      ownedWork.add(r.wk);
+    }
+  }
+
+  let fallbackTried = 0;
+  let fallbackHit = 0;
+
+  const fallbackWorkKeys = await pMapLimit(entries, 4, async (e) => {
+    const isbn = String(e?.isbn || "").trim();
+    const title = String(e?.title || "").trim();
+    const authors = String(e?.authors || "").trim();
+
+    const fromIsbn = isbn ? wkByIsbn.get(isbn) ?? null : null;
+    if (fromIsbn) return fromIsbn;
+
+    if (!title) return null;
+    fallbackTried++;
+    const wk = await openLibraryWorkKeyByTitleAuthor(title, authors);
+    if (wk) fallbackHit++;
+    return wk;
+  });
+
+  for (const wk of fallbackWorkKeys) {
+    if (wk) ownedWork.add(wk);
   }
 
   debug.ownedWorkLookupsTried = normalizedIsbns.length;
   debug.ownedWorkLookupsSucceeded = succeeded;
+  debug.ownedWorkTitleFallbackTried = fallbackTried;
+  debug.ownedWorkTitleFallbackHit = fallbackHit;
   debug.ownedWorkKeysCount = ownedWork.size;
 
   return { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor };
@@ -558,11 +632,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let afterOwnedIsbn = 0;
     let afterOwnedWork = 0;
     let afterTitle = 0;
+    let droppedByAuthorLimit = 0;
 
     const seenIsbn = new Set<string>();
     const seenWorkOrIsbn = new Set<string>();
     const seenCanonical = new Set<string>();
     const seenTitlesByPrimaryAuthor = new Map<string, string[]>();
+    const perAuthorCount = new Map<string, number>();
 
     function fallbackCanonicalKey(r: Recommendation) {
       const authorKey = primaryAuthorKey(r.authors);
@@ -610,6 +686,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       seenCanonical.add(ck);
 
       if (authorKey) {
+        const cur = perAuthorCount.get(authorKey) ?? 0;
+        if (cur >= MAX_RECS_PER_PRIMARY_AUTHOR) {
+          droppedByAuthorLimit++;
+          continue;
+        }
+        perAuthorCount.set(authorKey, cur + 1);
+      }
+
+      if (authorKey) {
         const seenTitles = seenTitlesByPrimaryAuthor.get(authorKey) ?? [];
         seenTitles.push(r.title);
         seenTitlesByPrimaryAuthor.set(authorKey, seenTitles);
@@ -630,7 +715,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.candidatesAfterOwnedCanonicalFilter = afterTitle;
     debug.profileSourceCount = profile.likedCount;
     debug.readCount = entries.filter((e) => e.status === "read").length;
-    debug.diversifiedDroppedByAuthor = 0;
+    debug.diversifiedDroppedByAuthor = droppedByAuthorLimit;
     debug.totalMs = Date.now() - startedAt;
 
     return jsonOk(res, {
