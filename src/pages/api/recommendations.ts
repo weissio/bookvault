@@ -39,6 +39,9 @@ const SEARCH_CACHE_MAX_ENTRIES = 120;
 const OPENLIBRARY_QUERY_CONCURRENCY = 4;
 const OWNED_WORK_LOOKUP_CONCURRENCY = 8;
 const MAX_RECS_PER_PRIMARY_AUTHOR = 3;
+const STORY_WEIGHT = 60;
+const TOPIC_WEIGHT = 28;
+const AUTHOR_WEIGHT = 12;
 const WIKIDATA_LANGS = ["en", "de", "es", "fr"] as const;
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
@@ -151,6 +154,63 @@ function parseSubjects(raw: unknown): string[] {
   }
 
   return [t];
+}
+
+const STORY_STOPWORDS = new Set([
+  "fiction", "general", "novel", "book", "books", "story", "stories", "literature",
+  "roman", "romane", "romanzo", "romance", "classic", "classics",
+  "the", "and", "for", "with", "from", "into", "about", "that", "this", "have", "your",
+  "der", "die", "das", "und", "mit", "von", "ein", "eine", "oder", "auch", "ueber",
+  "del", "los", "las", "con", "para", "una", "uno", "por", "sobre",
+  "le", "la", "les", "des", "avec", "dans", "pour", "une", "sur",
+]);
+
+function extractStoryTerms(input: string): string[] {
+  return norm(input)
+    .split(" ")
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 4)
+    .filter((x) => !STORY_STOPWORDS.has(x));
+}
+
+type StoryProfile = {
+  weights: Map<string, number>;
+  topTerms: { term: string; weight: number }[];
+  normDenominator: number;
+};
+
+function buildStoryProfile(entries: any[], minRating: number): StoryProfile {
+  const liked = entries.filter(
+    (e) => e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating
+  );
+
+  const weights = new Map<string, number>();
+
+  for (const e of liked) {
+    const rating = typeof e.rating === "number" ? e.rating : minRating;
+    const w = clamp(rating, minRating, 10) / 10;
+
+    const textParts = [
+      String(e.title || ""),
+      String(e.description || ""),
+      String(e.notes || ""),
+      parseSubjects(e.subjects).join(" "),
+    ].filter(Boolean);
+
+    const terms = Array.from(new Set(extractStoryTerms(textParts.join(" "))));
+    for (const t of terms) {
+      weights.set(t, (weights.get(t) ?? 0) + w);
+    }
+  }
+
+  const topTerms = Array.from(weights.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([term, weight]) => ({ term, weight }));
+
+  const normDenominator = topTerms.slice(0, 10).reduce((acc, x) => acc + x.weight, 0) || 1;
+
+  return { weights, topTerms, normDenominator };
 }
 
 function tokenOverlapRatio(a: string[], b: string[]) {
@@ -525,51 +585,65 @@ function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
 /** -----------------------------
  *  Scoring
  *  ----------------------------- */
-function scoreCandidate(doc: OpenLibraryDoc, profile: Profile) {
+function scoreCandidate(doc: OpenLibraryDoc, profile: Profile, storyProfile: StoryProfile) {
   const docSubjects: string[] = subjectsFromDoc(doc);
   const docAuthors = (Array.isArray(doc?.author_name) ? doc.author_name : []) as string[];
 
   const topSubj = profile.topSubjects.map((s) => s.subject);
   const topAuth = profile.topAuthors.map((a) => a.author);
 
-  const set = new Set(docSubjects.map((s) => norm(s)));
+  const subjectSet = new Set(docSubjects.map((s) => norm(s)));
   const subjHits: string[] = [];
-  let score = 0;
-
   for (const s of topSubj) {
-    if (set.has(norm(s))) {
-      score += 5;
-      subjHits.push(s);
-    }
+    if (subjectSet.has(norm(s))) subjHits.push(s);
   }
 
   const docAuthNorm = new Set(docAuthors.map((a) => norm(a)));
   const authHit = topAuth.find((a) => docAuthNorm.has(norm(a)));
-  if (authHit) score += 7;
 
-  score += Math.min(3, docSubjects.length / 6);
+  const storyInput = [String(doc.title || ""), docSubjects.join(" ")].join(" ");
+  const candidateStoryTerms = Array.from(new Set(extractStoryTerms(storyInput)));
+
+  let storyRaw = 0;
+  const storyHits: { term: string; weight: number }[] = [];
+  for (const t of candidateStoryTerms) {
+    const w = storyProfile.weights.get(t);
+    if (!w) continue;
+    storyRaw += w;
+    storyHits.push({ term: t, weight: w });
+  }
+
+  storyHits.sort((a, b) => b.weight - a.weight);
+
+  const storyNorm = Math.min(1, storyRaw / storyProfile.normDenominator);
+  const topicNorm = topSubj.length ? Math.min(1, subjHits.length / Math.min(3, topSubj.length)) : 0;
+  const authorNorm = authHit ? 1 : 0;
+
+  const score = STORY_WEIGHT * storyNorm + TOPIC_WEIGHT * topicNorm + AUTHOR_WEIGHT * authorNorm;
 
   const reasons: Reason[] = [];
+  if (storyHits.length > 0) {
+    reasons.push({
+      label: "Story-Ähnlichkeit",
+      detail: `ähnliche Motive: ${storyHits.slice(0, 2).map((x) => `„${x.term}“`).join(", ")}`,
+    });
+  }
+
   if (subjHits.length) {
     reasons.push({
       label: "Themen-Überschneidung",
       detail: `passt zu „${subjHits[0]}“ (kommt oft in deinen Top-Büchern vor)`,
     });
-    if (subjHits.length > 1) {
-      reasons.push({
-        label: "Mehr davon",
-        detail: `auch verbunden mit „${subjHits[1]}“`,
-      });
-    }
   }
+
   if (authHit) {
     reasons.push({
       label: "Autor-Ähnlichkeit",
-      detail: "Autor:in taucht in deinem Profil stark auf",
+      detail: "Autor:in taucht in deinem Profil auf (niedrig gewichtet)",
     });
   }
 
-  return { score, reasons };
+  return { score, reasons: reasons.slice(0, 3) };
 }
 
 /** -----------------------------
@@ -682,6 +756,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         authors: true,
         status: true,
         rating: true,
+        notes: true,
+        description: true,
         subjects: true,
       },
     });
@@ -689,9 +765,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.entryCount = entries.length;
 
     const profile = computeProfile(entries, minRating);
+    const storyProfile = buildStoryProfile(entries, minRating);
     debug.likedCount = profile.likedCount;
     debug.topSubjectsCount = profile.topSubjects.length;
     debug.topAuthorsCount = profile.topAuthors.length;
+    debug.storyTermsCount = storyProfile.topTerms.length;
 
     if (profile.likedCount === 0) {
       debug.totalMs = Date.now() - startedAt;
@@ -752,7 +830,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const authors = authorsFromDoc(doc);
       const subjects = subjectsFromDoc(doc);
 
-      const { score, reasons } = scoreCandidate(doc, profile);
+      const { score, reasons } = scoreCandidate(doc, profile, storyProfile);
       if (score <= 0) continue;
 
       const wk = workKeyFromDoc(doc);
