@@ -38,7 +38,7 @@ const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_CACHE_MAX_ENTRIES = 120;
 const OPENLIBRARY_QUERY_CONCURRENCY = 4;
 const OWNED_WORK_LOOKUP_CONCURRENCY = 8;
-const MAX_RECS_PER_PRIMARY_AUTHOR = 1;
+const MAX_RECS_PER_PRIMARY_AUTHOR = 3;
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
 
@@ -633,12 +633,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let afterOwnedWork = 0;
     let afterTitle = 0;
     let droppedByAuthorLimit = 0;
+    let candidateWorkTitleFallbackTried = 0;
+    let candidateWorkTitleFallbackHit = 0;
 
     const seenIsbn = new Set<string>();
     const seenWorkOrIsbn = new Set<string>();
     const seenCanonical = new Set<string>();
     const seenTitlesByPrimaryAuthor = new Map<string, string[]>();
     const perAuthorCount = new Map<string, number>();
+    const candidateWorkByTitleCache = new Map<string, string | null>();
 
     function fallbackCanonicalKey(r: Recommendation) {
       const authorKey = primaryAuthorKey(r.authors);
@@ -658,6 +661,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const tKey = titleTokenKey(r.title);
       const strictOwnedKey = `${authorKey}|${tKey}`;
 
+      let resolvedWorkKey: string | null = wk;
+      if (!resolvedWorkKey) {
+        const cacheKey = `${authorKey}|${tKey || norm(r.title)}`;
+        if (candidateWorkByTitleCache.has(cacheKey)) {
+          resolvedWorkKey = candidateWorkByTitleCache.get(cacheKey) ?? null;
+        } else {
+          candidateWorkTitleFallbackTried++;
+          resolvedWorkKey = await openLibraryWorkKeyByTitleAuthor(r.title, r.authors);
+          if (resolvedWorkKey) candidateWorkTitleFallbackHit++;
+          candidateWorkByTitleCache.set(cacheKey, resolvedWorkKey ?? null);
+        }
+      }
+
       if (ownedIsbn.has(r.isbn)) continue;
       if (seenIsbn.has(r.isbn)) continue;
       if (tKey && ownedCanonical.has(strictOwnedKey)) continue;
@@ -669,10 +685,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       afterOwnedIsbn++;
 
-      if (wk && ownedWork.has(wk)) continue;
+      if (resolvedWorkKey && ownedWork.has(resolvedWorkKey)) continue;
       afterOwnedWork++;
 
-      const workOrIsbnKey = wk ? `wk:${wk}` : `isbn:${r.isbn}`;
+      const workOrIsbnKey = resolvedWorkKey ? `wk:${resolvedWorkKey}` : `isbn:${r.isbn}`;
       if (seenWorkOrIsbn.has(workOrIsbnKey)) continue;
       seenWorkOrIsbn.add(workOrIsbnKey);
 
@@ -681,7 +697,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (seenTitles.some((seenTitle) => isTitleNearDuplicateSameAuthor(r.title, seenTitle))) continue;
       }
 
-      const ck = wk ? `wk:${wk}` : fallbackCanonicalKey(r);
+      const ck = resolvedWorkKey ? `wk:${resolvedWorkKey}` : fallbackCanonicalKey(r);
       if (seenCanonical.has(ck)) continue;
       seenCanonical.add(ck);
 
@@ -716,6 +732,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.profileSourceCount = profile.likedCount;
     debug.readCount = entries.filter((e) => e.status === "read").length;
     debug.diversifiedDroppedByAuthor = droppedByAuthorLimit;
+    debug.candidateWorkTitleFallbackTried = candidateWorkTitleFallbackTried;
+    debug.candidateWorkTitleFallbackHit = candidateWorkTitleFallbackHit;
     debug.totalMs = Date.now() - startedAt;
 
     return jsonOk(res, {
