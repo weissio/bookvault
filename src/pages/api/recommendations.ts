@@ -459,6 +459,7 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   const ownedIsbn = new Set<string>();
   const ownedCanonical = new Set<string>();
   const ownedTitlesByPrimaryAuthor = new Map<string, string[]>();
+  const ownedAuthorKeys = new Set<string>();
 
   const normalizedIsbns = uniq(
     entries
@@ -473,6 +474,7 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   for (const e of entries) {
     const title = String(e?.title || "").trim();
     const authorKey = primaryAuthorKey(String(e?.authors || ""));
+    if (authorKey) ownedAuthorKeys.add(authorKey);
     const tKey = titleTokenKey(title);
     if (!tKey) continue;
 
@@ -529,7 +531,7 @@ async function buildOwnedKeys(entries: any[], debug: DebugInfo) {
   debug.ownedWorkTitleFallbackHit = fallbackHit;
   debug.ownedWorkKeysCount = ownedWork.size;
 
-  return { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor };
+  return { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor, ownedAuthorKeys };
 }
 
 /** -----------------------------
@@ -581,7 +583,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    const { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor } = await buildOwnedKeys(entries, debug);
+    const { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor, ownedAuthorKeys } = await buildOwnedKeys(entries, debug);
     debug.ownedWorkCanonCount = ownedWork.size;
 
     const topSubjects = profile.topSubjects.map((x) => x.subject);
@@ -660,6 +662,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let droppedByAuthorLimit = 0;
     let candidateWorkTitleFallbackTried = 0;
     let candidateWorkTitleFallbackHit = 0;
+    let candidateWorkIsbnVerificationTried = 0;
+    let candidateWorkIsbnVerificationHit = 0;
 
     const seenIsbn = new Set<string>();
     const seenWorkOrIsbn = new Set<string>();
@@ -696,6 +700,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           resolvedWorkKey = await openLibraryWorkKeyByTitleAuthor(r.title, r.authors);
           if (resolvedWorkKey) candidateWorkTitleFallbackHit++;
           candidateWorkByTitleCache.set(cacheKey, resolvedWorkKey ?? null);
+        }
+      }
+
+      // For authors already in library, verify work key via ISBN to catch cross-language same-work variants.
+      if (authorKey && ownedAuthorKeys.has(authorKey)) {
+        candidateWorkIsbnVerificationTried++;
+        const isbnVerifiedWorkKey = await openLibraryIsbnToWorkKey(r.isbn);
+        if (isbnVerifiedWorkKey) {
+          candidateWorkIsbnVerificationHit++;
+          resolvedWorkKey = isbnVerifiedWorkKey;
         }
       }
 
@@ -759,6 +773,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.diversifiedDroppedByAuthor = droppedByAuthorLimit;
     debug.candidateWorkTitleFallbackTried = candidateWorkTitleFallbackTried;
     debug.candidateWorkTitleFallbackHit = candidateWorkTitleFallbackHit;
+    debug.candidateWorkIsbnVerificationTried = candidateWorkIsbnVerificationTried;
+    debug.candidateWorkIsbnVerificationHit = candidateWorkIsbnVerificationHit;
     debug.totalMs = Date.now() - startedAt;
 
     return jsonOk(res, {
