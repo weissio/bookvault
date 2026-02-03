@@ -39,8 +39,11 @@ const SEARCH_CACHE_MAX_ENTRIES = 120;
 const OPENLIBRARY_QUERY_CONCURRENCY = 4;
 const OWNED_WORK_LOOKUP_CONCURRENCY = 8;
 const MAX_RECS_PER_PRIMARY_AUTHOR = 3;
+const WIKIDATA_LANGS = ["en", "de", "es", "fr"] as const;
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
+const openLibraryWorkWikidataCache = new Map<string, string | null>();
+const wikidataTitleAuthorCache = new Map<string, string | null>();
 
 function jsonOk(res: NextApiResponse, data: any) {
   res.status(200).json({ ok: true, ...data });
@@ -242,6 +245,123 @@ async function openLibraryIsbnToWorkKey(isbn: string): Promise<string | null> {
     olIsbnWorkCache.set(key, null);
     return null;
   }
+}
+
+function extractWikidataQid(raw: string): string | null {
+  const s2 = String(raw || "").trim();
+  const m = s2.match(/Q\d+/i);
+  return m ? m[0].toUpperCase() : null;
+}
+
+async function openLibraryWorkToWikidataQid(workKey: string): Promise<string | null> {
+  const wk = String(workKey || "").trim();
+  if (!wk) return null;
+  if (openLibraryWorkWikidataCache.has(wk)) return openLibraryWorkWikidataCache.get(wk)!;
+
+  try {
+    const url = `https://openlibrary.org${wk}.json`;
+    const j = await fetchJson(url, 12000);
+
+    const fromIdentifiers = Array.isArray(j?.identifiers?.wikidata) ? j.identifiers.wikidata : [];
+    for (const v of fromIdentifiers) {
+      const q = extractWikidataQid(String(v));
+      if (q) {
+        openLibraryWorkWikidataCache.set(wk, q);
+        return q;
+      }
+    }
+
+    const links = Array.isArray(j?.links) ? j.links : [];
+    for (const l of links) {
+      const q = extractWikidataQid(String(l?.url || ""));
+      if (q) {
+        openLibraryWorkWikidataCache.set(wk, q);
+        return q;
+      }
+    }
+
+    openLibraryWorkWikidataCache.set(wk, null);
+    return null;
+  } catch {
+    openLibraryWorkWikidataCache.set(wk, null);
+    return null;
+  }
+}
+
+async function wikidataWorkQidByTitleAuthor(title: string, authors: string): Promise<string | null> {
+  const t = String(title || "").trim();
+  const a = String(authors || "").trim();
+  if (!t) return null;
+
+  const key = `${primaryAuthorKey(a)}|${titleTokenKey(t) || norm(t)}`;
+  if (wikidataTitleAuthorCache.has(key)) return wikidataTitleAuthorCache.get(key)!;
+
+  const authorNeedle = primaryAuthorKey(a);
+  const authorLast = norm(authorLastName(pickPrimaryAuthor(a)));
+
+  try {
+    for (const lang of WIKIDATA_LANGS) {
+      const params = new URLSearchParams();
+      params.set("action", "wbsearchentities");
+      params.set("format", "json");
+      params.set("language", lang);
+      params.set("type", "item");
+      params.set("limit", "8");
+      params.set("search", t);
+
+      const url = `https://www.wikidata.org/w/api.php?${params.toString()}`;
+      const j = await fetchJson(url, 12000, { Accept: "application/json" });
+      const arr = Array.isArray(j?.search) ? j.search : [];
+      if (!arr.length) continue;
+
+      let best: { id: string; score: number } | null = null;
+      for (const item of arr) {
+        const id = extractWikidataQid(String(item?.id || ""));
+        if (!id) continue;
+
+        const label = norm(String(item?.label || ""));
+        const desc = norm(String(item?.description || ""));
+        const blob = `${label} ${desc}`;
+
+        let score = 0;
+        if (titleTokenKey(t) && label.includes(titleTokenKey(t).split(" ")[0] || "")) score += 2;
+        if (desc.includes("novel") || desc.includes("book") || desc.includes("roman")) score += 2;
+        if (authorNeedle && blob.includes(authorNeedle)) score += 3;
+        if (authorLast && blob.includes(authorLast)) score += 2;
+
+        if (!best || score > best.score) best = { id, score };
+      }
+
+      if (best && best.score >= 3) {
+        wikidataTitleAuthorCache.set(key, best.id);
+        return best.id;
+      }
+    }
+
+    wikidataTitleAuthorCache.set(key, null);
+    return null;
+  } catch {
+    wikidataTitleAuthorCache.set(key, null);
+    return null;
+  }
+}
+
+async function resolveCanonicalKey(workKey: string | null, title: string, authors: string): Promise<string | null> {
+  if (workKey) {
+    const qid = await openLibraryWorkToWikidataQid(workKey);
+    if (qid) return `wd:${qid}`;
+  }
+
+  const qidByTitle = await wikidataWorkQidByTitleAuthor(title, authors);
+  if (qidByTitle) return `wd:${qidByTitle}`;
+
+  if (workKey) return `ol:${workKey}`;
+
+  const ak = primaryAuthorKey(authors);
+  const tk = titleTokenKey(title);
+  if (tk) return `na:${ak}|${tk}`;
+
+  return null;
 }
 
 function workKeyFromDoc(doc: OpenLibraryDoc): string | null {
@@ -586,6 +706,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { ownedIsbn, ownedWork, ownedCanonical, ownedTitlesByPrimaryAuthor, ownedAuthorKeys } = await buildOwnedKeys(entries, debug);
     debug.ownedWorkCanonCount = ownedWork.size;
 
+    const ownedCanonicalResolved = new Set<string>();
+    for (const e of entries) {
+      const et = String(e?.title || "").trim();
+      const ea = String(e?.authors || "").trim();
+      const ei = String(e?.isbn || "").trim();
+      let ewk: string | null = null;
+      if (ei) ewk = await openLibraryIsbnToWorkKey(ei);
+      const ckey = await resolveCanonicalKey(ewk, et, ea);
+      if (ckey) ownedCanonicalResolved.add(ckey);
+    }
+
     const topSubjects = profile.topSubjects.map((x) => x.subject);
     const topAuthors = profile.topAuthors.map((x) => x.author);
 
@@ -664,6 +795,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let candidateWorkTitleFallbackHit = 0;
     let candidateWorkIsbnVerificationTried = 0;
     let candidateWorkIsbnVerificationHit = 0;
+    let candidateCanonicalResolvedHit = 0;
 
     const seenIsbn = new Set<string>();
     const seenWorkOrIsbn = new Set<string>();
@@ -713,6 +845,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       }
 
+      let resolvedCanonicalKey: string | null = null;
+      const needsOwnedCanonicalCheck = authorKey && ownedAuthorKeys.has(authorKey);
+      if (needsOwnedCanonicalCheck || !resolvedWorkKey) {
+        resolvedCanonicalKey = await resolveCanonicalKey(resolvedWorkKey, r.title, r.authors);
+        if (resolvedCanonicalKey) {
+          candidateCanonicalResolvedHit++;
+          if (ownedCanonicalResolved.has(resolvedCanonicalKey)) continue;
+        }
+      }
+
       if (ownedIsbn.has(r.isbn)) continue;
       if (seenIsbn.has(r.isbn)) continue;
       if (tKey && ownedCanonical.has(strictOwnedKey)) continue;
@@ -736,7 +878,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (seenTitles.some((seenTitle) => isTitleNearDuplicateSameAuthor(r.title, seenTitle))) continue;
       }
 
-      const ck = resolvedWorkKey ? `wk:${resolvedWorkKey}` : fallbackCanonicalKey(r);
+      const ck = resolvedCanonicalKey ?? (resolvedWorkKey ? `wk:${resolvedWorkKey}` : fallbackCanonicalKey(r));
       if (seenCanonical.has(ck)) continue;
       seenCanonical.add(ck);
 
@@ -775,6 +917,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.candidateWorkTitleFallbackHit = candidateWorkTitleFallbackHit;
     debug.candidateWorkIsbnVerificationTried = candidateWorkIsbnVerificationTried;
     debug.candidateWorkIsbnVerificationHit = candidateWorkIsbnVerificationHit;
+    debug.candidateCanonicalResolvedHit = candidateCanonicalResolvedHit;
+    debug.ownedCanonicalResolvedCount = ownedCanonicalResolved.size;
     debug.totalMs = Date.now() - startedAt;
 
     return jsonOk(res, {
