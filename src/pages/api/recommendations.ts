@@ -51,6 +51,8 @@ const WIKIDATA_LANGS = ["en", "de", "es", "fr"] as const;
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
 const openLibraryWorkWikidataCache = new Map<string, string | null>();
 const wikidataTitleAuthorCache = new Map<string, string | null>();
+const openLibraryWorkDescriptionCache = new Map<string, string | null>();
+const wikidataDescriptionCache = new Map<string, string | null>();
 
 function jsonOk(res: NextApiResponse, data: any) {
   res.status(200).json({ ok: true, ...data });
@@ -737,6 +739,74 @@ function descriptionFromDoc(doc: OpenLibraryDoc): string | null {
   return null;
 }
 
+async function openLibraryDescriptionFromWorkKey(workKey: string | null): Promise<string | null> {
+  const wk = String(workKey || "").trim();
+  if (!wk) return null;
+
+  if (openLibraryWorkDescriptionCache.has(wk)) {
+    return openLibraryWorkDescriptionCache.get(wk)!;
+  }
+
+  try {
+    const url = `https://openlibrary.org${wk}.json`;
+    const j = await fetchJson(url, 12000);
+
+    let out: string | null = null;
+    if (typeof j?.description === "string") out = j.description.trim() || null;
+    if (!out && typeof j?.description?.value === "string") out = String(j.description.value).trim() || null;
+
+    openLibraryWorkDescriptionCache.set(wk, out);
+    return out;
+  } catch {
+    openLibraryWorkDescriptionCache.set(wk, null);
+    return null;
+  }
+}
+
+async function wikidataDescriptionByCanonicalKey(canonicalKey: string | null): Promise<string | null> {
+  const key = String(canonicalKey || "").trim();
+  if (!key.startsWith("wd:Q")) return null;
+  if (wikidataDescriptionCache.has(key)) return wikidataDescriptionCache.get(key)!;
+
+  try {
+    const qid = key.slice(3);
+    const url = `https://www.wikidata.org/wiki/Special:EntityData/${encodeURIComponent(qid)}.json`;
+    const j = await fetchJson(url, 12000, { Accept: "application/json" });
+    const entity = j?.entities?.[qid];
+    const desc = entity?.descriptions || {};
+
+    const preferred = ["de", "en", "es", "fr"];
+    for (const lang of preferred) {
+      const v = desc?.[lang]?.value;
+      if (typeof v === "string" && v.trim()) {
+        const out = v.trim();
+        wikidataDescriptionCache.set(key, out);
+        return out;
+      }
+    }
+
+    const any = Object.values(desc || {}).find((x: any) => typeof x?.value === "string" && x.value.trim());
+    const out = typeof (any as any)?.value === "string" ? String((any as any).value).trim() : null;
+    wikidataDescriptionCache.set(key, out);
+    return out;
+  } catch {
+    wikidataDescriptionCache.set(key, null);
+    return null;
+  }
+}
+
+function synthesizeDescription(rec: Recommendation): string {
+  const motifs = rec.reasons
+    .map((r) => String(r.detail || ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const subjects = (rec.subjects || []).slice(0, 4).join(", ");
+  const core = subjects || motifs || "thematisch passend zu deinem Profil";
+  return `Inhaltshinweis (aus Metadaten): ${core}.`;
+}
+
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
   const arr: string[] = Array.isArray(doc?.subject) ? doc.subject : [];
   return arr.slice(0, 12);
@@ -1191,6 +1261,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       r.workKey = resolvedWorkKey;
       r.recId = resolvedCanonicalKey || (resolvedWorkKey ? `wk:${resolvedWorkKey}` : `isbn:${r.isbn}`);
       out.push(r);
+    }
+
+    const missingDescIdx: number[] = [];
+    for (let i = 0; i < out.length; i++) {
+      if (!out[i].description && out[i].workKey) missingDescIdx.push(i);
+    }
+
+    const descResults = await pMapLimit(missingDescIdx, 4, async (idx) => {
+      const key = out[idx].workKey || null;
+      return openLibraryDescriptionFromWorkKey(key);
+    });
+
+    for (let i = 0; i < missingDescIdx.length; i++) {
+      const idx = missingDescIdx[i];
+      const d = descResults[i];
+      if (d) out[idx].description = d;
+    }
+
+    // 2nd fallback: Wikidata short description via canonical key (wd:Q...)
+    const missingAfterOl = out
+      .map((x, idx) => ({ x, idx }))
+      .filter(({ x }) => !x.description && !!x.recId)
+      .map(({ idx }) => idx);
+
+    const wdDescResults = await pMapLimit(missingAfterOl, 4, async (idx) => {
+      return wikidataDescriptionByCanonicalKey(out[idx].recId || null);
+    });
+
+    for (let i = 0; i < missingAfterOl.length; i++) {
+      const idx = missingAfterOl[i];
+      const d = wdDescResults[i];
+      if (d) out[idx].description = d;
+    }
+
+    // Final fallback: never empty in UI.
+    for (const rec of out) {
+      if (!rec.description) rec.description = synthesizeDescription(rec);
     }
 
     debug.candidatesAfterOwnedIsbnFilter = afterOwnedIsbn;
