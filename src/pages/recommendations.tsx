@@ -46,7 +46,7 @@ function nowId() {
 
 type Toast = { id: string; text: string; kind: "success" | "error" | "info" };
 
-function truncate(text: string, max = 420) {
+function truncate(text: string, max = 340) {
   if (text.length <= max) return text;
   return text.slice(0, max).trimEnd() + "…";
 }
@@ -483,12 +483,12 @@ export default function RecommendationsPage() {
                     <div style={{ opacity: 0.85 }}>{x.authors}</div>
                     <div style={{ opacity: 0.65, fontSize: 12 }}>
                       ISBN: {x.isbn}
-                      {x.workKey ? <span style={{ marginLeft: 10 }}>• Work: {x.workKey}</span> : null}
+                      
                     </div>
 
                     <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
-                      <span style={{ fontWeight: 800 }}>Inhalt (DE):</span>{" "}
-                      {x.description ? truncate(x.description, 520) : <span style={{ opacity: 0.7 }}>nicht verfügbar</span>}
+                      <span style={{ fontWeight: 800 }}>Kurzinhalt:</span>{" "}
+                      {x.description ? truncate(x.description, 360) : <span style={{ opacity: 0.7 }}>nicht verfügbar</span>}
                     </div>
 
                     <div style={{ marginTop: 10, display: "grid", gap: 6 }}>

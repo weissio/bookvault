@@ -30,6 +30,7 @@ type OpenLibraryDoc = {
   author_name?: string[];
   isbn?: string[];
   subject?: string[];
+  language?: string[];
   first_sentence?: string | { value?: string } | Array<string | { value?: string }>;
 };
 
@@ -693,7 +694,7 @@ async function openLibrarySearch(query: string, limit: number, debug: DebugInfo,
   params.set("q", query);
   params.set("mode", "everything");
   params.set("limit", String(limit));
-  params.set("fields", "title,author_name,isbn,subject,first_sentence,cover_i,edition_key,key");
+  params.set("fields", "title,author_name,isbn,subject,language,first_sentence,cover_i,edition_key,key");
 
   const url = `https://openlibrary.org/search.json?${params.toString()}`;
 
@@ -759,6 +760,16 @@ function descriptionFromDoc(doc: OpenLibraryDoc): string | null {
   return null;
 }
 
+function isGermanDoc(doc: OpenLibraryDoc): boolean {
+  const langs = Array.isArray(doc.language) ? doc.language.map((x) => String(x).toLowerCase()) : [];
+  if (langs.some((l) => l === "ger" || l === "deu" || l === "de" || l.startsWith("ger") || l.startsWith("deu"))) {
+    return true;
+  }
+
+  const title = String(doc.title || "");
+  return looksGerman(title);
+}
+
 async function openLibraryDescriptionFromWorkKey(workKey: string | null): Promise<string | null> {
   const wk = String(workKey || "").trim();
   if (!wk) return null;
@@ -818,11 +829,15 @@ async function wikidataDescriptionByCanonicalKey(canonicalKey: string | null): P
 function looksGerman(text: string): boolean {
   const t = norm(text);
   if (!t) return false;
-  const hints = [" und ", " mit ", " der ", " die ", " das ", " ein ", " eine ", " ist ", " fuer ", " ueber "];
+
+  const words = new Set(t.split(" ").filter(Boolean));
+  const hints = ["und", "mit", "der", "die", "das", "ein", "eine", "ist", "nicht", "auch", "wird"];
+
   let hits = 0;
   for (const h of hints) {
-    if (t.includes(h.trim())) hits++;
+    if (words.has(h)) hits++;
   }
+
   return hits >= 2;
 }
 
@@ -834,16 +849,14 @@ function synthesizeDescription(rec: Recommendation): string {
       return Object.keys(MOTIF_EXPLAIN_DE).filter((k) => raw.includes(k.replace(/_/g, " ")) || raw.includes(MOTIF_LABEL_DE[k] || ""));
     });
 
-  const motifSentence = motifs.length
-    ? MOTIF_EXPLAIN_DE[motifs[0]] || "ein Erzaehlmuster, das gut zu deinem Profil passt"
-    : "ein Erzaehlmuster, das gut zu deinem Profil passt";
-
+  const motifText = motifs.length ? (MOTIF_EXPLAIN_DE[motifs[0]] || "eine passende Erzählstruktur") : "eine passende Erzählstruktur";
   const subjects = (rec.subjects || []).filter((x) => !isGenericSubject(x)).slice(0, 4);
-  const subjectSentence = subjects.length
-    ? `Typische Themen sind ${subjects.join(", ")}.`
-    : "Die Empfehlung orientiert sich an Motiven und Themen aus deinen gut bewerteten Buechern.";
 
-  return `Dieses Buch koennte gut zu deinem Geschmack passen, weil es ${motifSentence} zeigt. ${subjectSentence}`;
+  if (subjects.length > 0) {
+    return `Im Mittelpunkt stehen ${subjects.join(", ")}. Besonders passend wirkt der Fokus auf ${motifText}.`;
+  }
+
+  return `Die Empfehlung passt vor allem wegen ${motifText} zu deinem Profil.`;
 }
 
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
@@ -909,12 +922,12 @@ function scoreCandidate(doc: OpenLibraryDoc, profile: Profile, storyProfile: Sto
   if (motifHits.length > 0) {
     reasons.push({
       label: "Story-Ähnlichkeit",
-      detail: `passt im Erzaehlkern zu: ${motifHits.slice(0, 2).map((x) => `„${MOTIF_LABEL_DE[x.motif] || x.motif.replace(/_/g, " ")}“`).join(", ")}`,
+      detail: `ähnlicher Erzählkern: ${motifHits.slice(0, 2).map((x) => `„${MOTIF_LABEL_DE[x.motif] || x.motif.replace(/_/g, " ")}“`).join(", ")}`,
     });
   } else if (storyHits.length > 0) {
     reasons.push({
       label: "Story-Ähnlichkeit",
-      detail: `aehnliche Schwerpunkte: ${storyHits.slice(0, 2).map((x) => `„${x.term}“`).join(", ")}`,
+      detail: `ähnliche Schwerpunkte: ${storyHits.slice(0, 2).map((x) => `„${x.term}“`).join(", ")}`,
     });
   }
 
@@ -1111,7 +1124,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     debug.docsTotal = docs.length;
 
-    const scored: Array<{ rec: Recommendation; workKey: string | null }> = [];
+    const scoredGerman: Array<{ rec: Recommendation; workKey: string | null }> = [];
+    const scoredOther: Array<{ rec: Recommendation; workKey: string | null }> = [];
 
     for (const doc of docs) {
       const isbn = bestIsbnFromDoc(doc);
@@ -1128,7 +1142,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const wk = workKeyFromDoc(doc);
 
-      scored.push({
+      const target = isGermanDoc(doc) ? scoredGerman : scoredOther;
+      target.push({
         workKey: wk,
         rec: {
           recId: `seed:${isbn}`,
@@ -1145,10 +1160,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    scored.sort((a, b) => b.rec.score - a.rec.score);
+    scoredGerman.sort((a, b) => b.rec.score - a.rec.score);
+    scoredOther.sort((a, b) => b.rec.score - a.rec.score);
+
+    const scored = scoredGerman.length >= limit ? scoredGerman : [...scoredGerman, ...scoredOther];
 
     debug.candidatesSeen = scored.length;
     debug.candidatesWithIsbn = scored.length;
+    debug.candidatesGerman = scoredGerman.length;
+    debug.candidatesNonGerman = scoredOther.length;
 
     debug.candidateWorkLookupsTried = 0;
     debug.candidateWorkLookupsSucceeded = 0;
@@ -1334,16 +1354,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (d) out[idx].description = d;
     }
 
-    // Final fallback: always provide a German content hint in UI.
+    // Final fallback: always provide concise German description in UI.
     for (const rec of out) {
-      if (!rec.description) {
-        rec.description = synthesizeDescription(rec);
-        continue;
-      }
-
       const desc = String(rec.description || "").trim();
-      if (!looksGerman(desc)) {
+      if (!desc || !looksGerman(desc)) {
         rec.description = synthesizeDescription(rec);
+      } else {
+        rec.description = desc.slice(0, 700);
       }
     }
 
