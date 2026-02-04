@@ -73,6 +73,7 @@ export default function RecommendationsPage() {
   const [seedMode, setSeedMode] = useState<"liked" | "allRead">("liked");
   const [minRating, setMinRating] = useState(4);
   const [limit, setLimit] = useState(15);
+  const [deOnly, setDeOnly] = useState(false);
 
   const [data, setData] = useState<RecResponse | null>(null);
   const [librarySeeds, setLibrarySeeds] = useState<LibrarySeedEntry[]>([]);
@@ -140,6 +141,7 @@ export default function RecommendationsPage() {
       params.set("seedMode", seedMode);
       params.set("minRating", String(minRating));
       params.set("limit", String(limit));
+      if (deOnly) params.set("deOnly", "1");
 
       const eligibleSet = new Set(eligibleSeedIds);
       const filteredSelected = selectedSeedIds.filter((id) => eligibleSet.has(id));
@@ -171,7 +173,7 @@ export default function RecommendationsPage() {
     if (!user) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, seedMode, minRating, limit, selectedSeedIds.join(","), eligibleSeedIds.join(",")]);
+  }, [user, seedMode, minRating, limit, deOnly, selectedSeedIds.join(","), eligibleSeedIds.join(",")]);
 
   useEffect(() => {
     const eligibleSet = new Set(eligibleSeedIds);
@@ -392,6 +394,25 @@ export default function RecommendationsPage() {
               </select>
             </div>
 
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontWeight: 900 }}>Sprache</label>
+              <select
+                value={deOnly ? "de_only" : "de_pref"}
+                onChange={(e) => setDeOnly(e.target.value === "de_only")}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  background: "transparent",
+                  color: "inherit",
+                  minWidth: 220,
+                }}
+              >
+                <option value="de_pref">Deutsch priorisieren</option>
+                <option value="de_only">Nur deutsch (streng)</option>
+              </select>
+            </div>
+
             <button
               onClick={() => void load()}
               style={{
@@ -435,7 +456,7 @@ export default function RecommendationsPage() {
           </details>
 
           <div style={{ fontSize: 12, opacity: 0.75 }}>
-            V1-Logik: Story + Subjects aus deiner Bibliothek → Kandidaten von OpenLibrary → Score + „Warum?“ + Kurzinhalt.
+            V1-Logik: Story + Subjects aus deiner Bibliothek → Kandidaten von OpenLibrary → Score + „Warum?“ + Inhaltsangabe.
             {okData ? (
               <span style={{ marginLeft: 8 }}>
                 Seeds: <b>{okData.profile?.likedCount ?? 0}</b> • Top-Themen:{" "}
@@ -445,6 +466,7 @@ export default function RecommendationsPage() {
             ) : null}
           </div>
 
+          <div style={{ fontSize: 12, opacity: 0.72 }}>(Sprache: {deOnly ? "Nur deutsch" : "Deutsch priorisiert"})</div>
 
           <details
             style={{

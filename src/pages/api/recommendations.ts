@@ -882,21 +882,32 @@ function synthesizeDescription(rec: Recommendation): string {
 
   const motifKey = motifFromReasons[0] || null;
   const motifLabel = motifKey ? MOTIF_LABEL_DE[motifKey] : null;
-  const subjects = (rec.subjects || []).filter((x) => !isGenericSubject(x)).slice(0, 3);
 
-  if (motifLabel && subjects.length >= 2) {
-    return `Im Zentrum stehen ${subjects.join(", ")}. Der Ton geht klar in Richtung ${motifLabel.toLowerCase()}.`;
+  if (motifLabel === "Freundschaft") {
+    return "Im Mittelpunkt stehen enge Beziehungen und eine persoenliche Entwicklung der Hauptfiguren.";
   }
 
-  if (motifLabel) {
-    return `Die Geschichte setzt vor allem auf ${motifLabel.toLowerCase()} und starke Figurenbeziehungen.`;
+  if (motifLabel === "Erwachsenwerden") {
+    return "Die Geschichte begleitet einen Aufbruch ins Leben und die Suche nach dem eigenen Platz.";
   }
 
-  if (subjects.length > 0) {
-    return `Thematisch dreht sich das Buch vor allem um ${subjects.join(", ")}.`;
+  if (motifLabel === "Mentorenschaft") {
+    return "Zentral ist die Begegnung zwischen Generationen und der Einfluss praegender Vorbilder.";
   }
 
-  return "Eine charaktergetriebene Erzaehlung mit starker Beziehungsebene.";
+  if (motifLabel === "Verlust und Trauer") {
+    return "Die Handlung behandelt Verlust und zeigt, wie Figuren mit Trauer und Veraenderung umgehen.";
+  }
+
+  if (motifLabel === "Selbstfindung") {
+    return "Die Erzaehlung fokussiert innere Entwicklung, Entscheidungen und persoenliche Reifung.";
+  }
+
+  if (motifLabel === "Buecherwelt") {
+    return "Das Buch bewegt sich stark im literarischen Umfeld und lebt von reflektierten Figuren.";
+  }
+
+  return "Eine ruhige, charakterorientierte Erzaehlung mit Fokus auf Beziehungen und Entwicklung.";
 }
 
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
@@ -1083,6 +1094,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const limit = requestedLimit >= 20 ? 20 : 15;
     const minRating = clamp(parseInt(String(req.query.minRating ?? "4"), 10) || 4, 0, 10);
     const seedMode = String(req.query.seedMode ?? "liked");
+    const deOnly = String(req.query.deOnly ?? "") === "1";
     const seedIdsRaw = String(req.query.seedEntryIds ?? "").trim();
     const selectedSeedIds = new Set<number>(
       seedIdsRaw
@@ -1098,6 +1110,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.limit = limit;
     debug.minRating = minRating;
     debug.seedMode = seedMode;
+    debug.deOnly = deOnly;
 
     const entries = await prisma.libraryEntry.findMany({
       where: { userId: user.id },
@@ -1198,6 +1211,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const wk = workKeyFromDoc(doc);
       const german = isGermanDoc(doc);
+      if (deOnly && !german) continue;
 
       const target = german ? scoredGerman : scoredOther;
       target.push({
