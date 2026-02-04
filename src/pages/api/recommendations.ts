@@ -47,6 +47,7 @@ const MAX_RECS_PER_PRIMARY_AUTHOR = 3;
 const STORY_WEIGHT = 60;
 const TOPIC_WEIGHT = 28;
 const AUTHOR_WEIGHT = 12;
+const GERMAN_SCORE_BONUS = 4;
 const WIKIDATA_LANGS = ["en", "de", "es", "fr"] as const;
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
@@ -762,12 +763,23 @@ function descriptionFromDoc(doc: OpenLibraryDoc): string | null {
 
 function isGermanDoc(doc: OpenLibraryDoc): boolean {
   const langs = Array.isArray(doc.language) ? doc.language.map((x) => String(x).toLowerCase()) : [];
-  if (langs.some((l) => l === "ger" || l === "deu" || l === "de" || l.startsWith("ger") || l.startsWith("deu"))) {
+  if (
+    langs.some(
+      (l) =>
+        l === "de" ||
+        l === "ger" ||
+        l === "deu" ||
+        l.includes("/ger") ||
+        l.includes("/deu") ||
+        l.includes("deutsch")
+    )
+  ) {
     return true;
   }
 
   const title = String(doc.title || "");
-  return looksGerman(title);
+  const firstSentence = descriptionFromDoc(doc) || "";
+  return looksGerman(`${title} ${firstSentence}`.trim());
 }
 
 async function openLibraryDescriptionFromWorkKey(workKey: string | null): Promise<string | null> {
@@ -827,11 +839,28 @@ async function wikidataDescriptionByCanonicalKey(canonicalKey: string | null): P
 }
 
 function looksGerman(text: string): boolean {
-  const t = norm(text);
-  if (!t) return false;
+  const raw = String(text || "").toLowerCase();
+  if (!raw.trim()) return false;
+  if (/[äöüß]/.test(raw)) return true;
 
-  const words = new Set(t.split(" ").filter(Boolean));
-  const hints = ["und", "mit", "der", "die", "das", "ein", "eine", "ist", "nicht", "auch", "wird"];
+  const words = new Set(norm(raw).split(" ").filter(Boolean));
+  const hints = [
+    "und",
+    "mit",
+    "der",
+    "die",
+    "das",
+    "ein",
+    "eine",
+    "ist",
+    "nicht",
+    "auch",
+    "wird",
+    "zum",
+    "zur",
+    "den",
+    "dem",
+  ];
 
   let hits = 0;
   for (const h of hints) {
@@ -842,21 +871,32 @@ function looksGerman(text: string): boolean {
 }
 
 function synthesizeDescription(rec: Recommendation): string {
-  const motifs = rec.reasons
+  const motifFromReasons = rec.reasons
     .filter((r) => r.label === "Story-Ähnlichkeit")
     .flatMap((r) => {
       const raw = String(r.detail || "");
-      return Object.keys(MOTIF_EXPLAIN_DE).filter((k) => raw.includes(k.replace(/_/g, " ")) || raw.includes(MOTIF_LABEL_DE[k] || ""));
+      return Object.keys(MOTIF_LABEL_DE).filter(
+        (k) => raw.toLowerCase().includes(String(MOTIF_LABEL_DE[k] || "").toLowerCase()) || raw.toLowerCase().includes(k.replace(/_/g, " "))
+      );
     });
 
-  const motifText = motifs.length ? (MOTIF_EXPLAIN_DE[motifs[0]] || "eine passende Erzählstruktur") : "eine passende Erzählstruktur";
-  const subjects = (rec.subjects || []).filter((x) => !isGenericSubject(x)).slice(0, 4);
+  const motifKey = motifFromReasons[0] || null;
+  const motifLabel = motifKey ? MOTIF_LABEL_DE[motifKey] : null;
+  const subjects = (rec.subjects || []).filter((x) => !isGenericSubject(x)).slice(0, 3);
 
-  if (subjects.length > 0) {
-    return `Im Mittelpunkt stehen ${subjects.join(", ")}. Besonders passend wirkt der Fokus auf ${motifText}.`;
+  if (motifLabel && subjects.length >= 2) {
+    return `Im Zentrum stehen ${subjects.join(", ")}. Der Ton geht klar in Richtung ${motifLabel.toLowerCase()}.`;
   }
 
-  return `Die Empfehlung passt vor allem wegen ${motifText} zu deinem Profil.`;
+  if (motifLabel) {
+    return `Die Geschichte setzt vor allem auf ${motifLabel.toLowerCase()} und starke Figurenbeziehungen.`;
+  }
+
+  if (subjects.length > 0) {
+    return `Thematisch dreht sich das Buch vor allem um ${subjects.join(", ")}.`;
+  }
+
+  return "Eine charaktergetriebene Erzaehlung mit starker Beziehungsebene.";
 }
 
 function subjectsFromDoc(doc: OpenLibraryDoc): string[] {
@@ -1043,6 +1083,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const limit = requestedLimit >= 20 ? 20 : 15;
     const minRating = clamp(parseInt(String(req.query.minRating ?? "4"), 10) || 4, 0, 10);
     const seedMode = String(req.query.seedMode ?? "liked");
+    const seedIdsRaw = String(req.query.seedEntryIds ?? "").trim();
+    const selectedSeedIds = new Set<number>(
+      seedIdsRaw
+        ? seedIdsRaw
+            .split(",")
+            .map((x) => Number(String(x).trim()))
+            .filter((x) => Number.isFinite(x) && x > 0)
+        : []
+    );
     const debugMode = String(req.query.debug ?? "") === "1";
 
     const debug: DebugInfo = {};
@@ -1054,6 +1103,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       where: { userId: user.id },
       take: 500,
       select: {
+        id: true,
         isbn: true,
         title: true,
         authors: true,
@@ -1067,8 +1117,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     debug.entryCount = entries.length;
 
-    const profile = computeProfile(entries, minRating);
-    const storyProfile = buildStoryProfile(entries, minRating);
+    const seedEntries = selectedSeedIds.size > 0 ? entries.filter((e) => selectedSeedIds.has(Number(e.id))) : entries;
+
+    const profile = computeProfile(seedEntries, minRating);
+    const storyProfile = buildStoryProfile(seedEntries, minRating);
+    debug.selectedSeedCount = selectedSeedIds.size;
+    debug.seedPoolCount = seedEntries.length;
     debug.likedCount = profile.likedCount;
     debug.topSubjectsCount = profile.topSubjects.length;
     debug.topAuthorsCount = profile.topAuthors.length;
@@ -1110,9 +1164,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const subjectLimit = clamp(Math.ceil(limit), 10, 40);
     const authorLimit = clamp(Math.ceil(limit * 0.6), 8, 25);
 
+    const subjectQueriesDe = topSubjects.map((s) => ({ q: `subject:"${s}" language:ger`, type: "subject_de" as const, l: subjectLimit }));
+    const authorQueriesDe = topAuthors.map((a) => ({ q: `author:"${a}" language:ger`, type: "author_de" as const, l: authorLimit }));
     const subjectQueries = topSubjects.map((s) => ({ q: `subject:"${s}"`, type: "subject" as const, l: subjectLimit }));
     const authorQueries = topAuthors.map((a) => ({ q: `author:"${a}"`, type: "author" as const, l: authorLimit }));
-    const allQueries = [...subjectQueries, ...authorQueries];
+    const allQueries = [...subjectQueriesDe, ...authorQueriesDe, ...subjectQueries, ...authorQueries];
 
     const queryResults = await pMapLimit(allQueries, OPENLIBRARY_QUERY_CONCURRENCY, async (entry) => {
       return openLibrarySearch(entry.q, entry.l, debug, entry.type);
@@ -1141,8 +1197,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (score <= 0) continue;
 
       const wk = workKeyFromDoc(doc);
+      const german = isGermanDoc(doc);
 
-      const target = isGermanDoc(doc) ? scoredGerman : scoredOther;
+      const target = german ? scoredGerman : scoredOther;
       target.push({
         workKey: wk,
         rec: {
@@ -1153,7 +1210,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           authors,
           coverUrl: coverFromIsbn(isbn),
           description: descriptionFromDoc(doc),
-          score,
+          score: score + (german ? GERMAN_SCORE_BONUS : 0),
           reasons,
           subjects,
         },

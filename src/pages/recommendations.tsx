@@ -40,6 +40,18 @@ type FeedbackResponse =
   | { ok: true; key: string; action: "like" | "dislike" }
   | { ok: false; error: string };
 
+type LibrarySeedEntry = {
+  id: number;
+  title: string;
+  authors: string;
+  status: string;
+  rating: number | null;
+};
+
+type LibraryListResponse =
+  | { ok: true; entries: LibrarySeedEntry[] }
+  | { ok: false; error: string };
+
 function nowId() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
@@ -63,6 +75,9 @@ export default function RecommendationsPage() {
   const [limit, setLimit] = useState(15);
 
   const [data, setData] = useState<RecResponse | null>(null);
+  const [librarySeeds, setLibrarySeeds] = useState<LibrarySeedEntry[]>([]);
+  const [selectedSeedIds, setSelectedSeedIds] = useState<number[]>([]);
+  const [seedLoading, setSeedLoading] = useState(false);
   // ✅ saved by recId (not ISBN) so editions/dupes don't cause weird UI behavior
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [preference, setPreference] = useState<Record<string, "like" | "dislike">>({});
@@ -88,14 +103,51 @@ export default function RecommendationsPage() {
     setMe(j);
   }
 
+  const eligibleSeedIds = useMemo(() => {
+    return librarySeeds
+      .filter((x) => {
+        if (x.status !== "read") return false;
+        if (seedMode === "allRead") return true;
+        return typeof x.rating === "number" && x.rating >= minRating;
+      })
+      .map((x) => x.id);
+  }, [librarySeeds, seedMode, minRating]);
+
+  async function loadSeeds() {
+    if (!user) return;
+    setSeedLoading(true);
+    try {
+      const r = await fetch("/api/library/list");
+      const j = (await r.json()) as LibraryListResponse;
+      if (!j.ok) {
+        setMsg(j.error || "Seed-Bibliothek konnte nicht geladen werden.");
+        return;
+      }
+      setLibrarySeeds(j.entries || []);
+    } catch (e: any) {
+      setMsg(e?.message ?? "Seed-Bibliothek konnte nicht geladen werden.");
+    } finally {
+      setSeedLoading(false);
+    }
+  }
+
   async function load() {
     setLoading(true);
     setMsg(null);
     setData(null);
     try {
-      const r = await fetch(
-        `/api/recommendations?seedMode=${encodeURIComponent(seedMode)}&minRating=${minRating}&limit=${limit}`
-      );
+      const params = new URLSearchParams();
+      params.set("seedMode", seedMode);
+      params.set("minRating", String(minRating));
+      params.set("limit", String(limit));
+
+      const eligibleSet = new Set(eligibleSeedIds);
+      const filteredSelected = selectedSeedIds.filter((id) => eligibleSet.has(id));
+      if (filteredSelected.length > 0) {
+        params.set("seedEntryIds", filteredSelected.join(","));
+      }
+
+      const r = await fetch(`/api/recommendations?${params.toString()}`);
       const j = (await r.json()) as RecResponse;
       setData(j);
       if (!j.ok) setMsg(j.error || "Konnte Empfehlungen nicht laden.");
@@ -112,9 +164,19 @@ export default function RecommendationsPage() {
 
   useEffect(() => {
     if (!user) return;
+    void loadSeeds();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, seedMode, minRating, limit]);
+  }, [user, seedMode, minRating, limit, selectedSeedIds.join(","), eligibleSeedIds.join(",")]);
+
+  useEffect(() => {
+    const eligibleSet = new Set(eligibleSeedIds);
+    setSelectedSeedIds((prev) => prev.filter((id) => eligibleSet.has(id)));
+  }, [eligibleSeedIds.join(",")]);
 
   async function saveToLibrary(item: RecItem) {
     setMsg(null);
@@ -346,7 +408,6 @@ export default function RecommendationsPage() {
             </button>
           </div>
 
-          {/* Score explanation */}
           <details
             style={{
               padding: 10,
@@ -357,70 +418,19 @@ export default function RecommendationsPage() {
           >
             <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.95 }}>
               Wie entsteht der Score?
-              <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.7, fontWeight: 800 }}>
-                (V1, transparent & erklärbar)
-              </span>
+              <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.7, fontWeight: 800 }}>(V1)</span>
             </summary>
 
             <div style={{ marginTop: 10, fontSize: 13, opacity: 0.92, lineHeight: 1.5 }}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Formel (vereinfacht)</div>
-              <div style={{ marginBottom: 10 }}>
+              <div style={{ marginBottom: 8 }}>
                 <code>Score = Story (60%) + Themen (28%) + Autor (12%)</code>
               </div>
-
-              <div style={{ display: "grid", gap: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 900 }}>1) Profil / Seeds</div>
-                  <div style={{ opacity: 0.9 }}>
-                    Seeds kommen aus deiner Bibliothek:
-                    <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                      <li>
-                        <b>liked</b>: Status <b>Gelesen</b> & Bewertung ≥ <b>min</b>
-                      </li>
-                      <li>
-                        <b>allRead</b>: alle <b>gelesenen</b> Bücher
-                      </li>
-                    </ul>
-                    Gewicht pro Seed (1..10):
-                    <div style={{ marginTop: 6 }}>
-                      <code>w = rating / 2</code>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontWeight: 900 }}>2) Themen-Overlap (Hauptteil)</div>
-                  <div style={{ opacity: 0.9 }}>
-                    Kandidaten kommen von OpenLibrary. Für jedes Kandidaten-Subject <code>s</code>, das in deinem Profil
-                    häufig ist:
-                    <div style={{ marginTop: 6 }}>
-                      <code>score += Σ subjectWeight[s]</code>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontWeight: 900 }}>3) Autor-Bonus</div>
-                  <div style={{ opacity: 0.9 }}>
-                    Wenn Autor:in des Kandidaten zu deinen Top-Autor:innen passt:
-                    <div style={{ marginTop: 6 }}>
-                      <code>score += 6</code>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontWeight: 900 }}>4) Dämpfung (Fairness)</div>
-                  <div style={{ opacity: 0.9 }}>
-                    Bücher mit extrem vielen Subjects sollen nicht automatisch gewinnen:
-                    <div style={{ marginTop: 6 }}>
-                      <code>score = score / sqrt(1 + subjects.length / 8)</code>
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ fontSize: 12, opacity: 0.75 }}>Der Score ist ein Ranking-Wert (relativ), kein Prozent-Match.</div>
-              </div>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                <li>Story hat das höchste Gewicht: Erzaehlmotive und Kernthemen aus deinen Seed-Buechern.</li>
+                <li>Themen gleichen Subjects aus deiner Bibliothek mit Kandidaten ab.</li>
+                <li>Autor bleibt bewusst bei 10-15%, damit nicht nur gleiche Autor:innen erscheinen.</li>
+                <li>Dublettenerkennung entfernt gleiche Werke auch ueber Sprachen und Editionen hinweg.</li>
+              </ul>
             </div>
           </details>
 
@@ -434,6 +444,113 @@ export default function RecommendationsPage() {
               </span>
             ) : null}
           </div>
+
+
+          <details
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "rgba(255,255,255,0.03)",
+            }}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.95 }}>
+              Seed-Buecher auswaehlen (optional)
+            </summary>
+
+            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 13, opacity: 0.86 }}>
+                Ohne Auswahl nutzt das System automatisch alle passenden Buecher aus deiner Bibliothek.
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  onClick={() => setSelectedSeedIds(eligibleSeedIds)}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "transparent",
+                    cursor: "pointer",
+                    fontWeight: 900,
+                  }}
+                >
+                  Alle waehlen
+                </button>
+                <button
+                  onClick={() => setSelectedSeedIds([])}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "transparent",
+                    cursor: "pointer",
+                    fontWeight: 900,
+                  }}
+                >
+                  Auswahl leeren
+                </button>
+                <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>
+                  Ausgewaehlt: <b>{selectedSeedIds.length}</b> / {eligibleSeedIds.length}
+                </div>
+              </div>
+
+              {seedLoading ? (
+                <div style={{ fontSize: 13, opacity: 0.75 }}>Lade Bibliothek...</div>
+              ) : (
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflow: "auto",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    padding: 8,
+                    display: "grid",
+                    gap: 6,
+                  }}
+                >
+                  {librarySeeds
+                    .filter((x) => eligibleSeedIds.includes(x.id))
+                    .map((entry) => {
+                      const checked = selectedSeedIds.includes(entry.id);
+                      return (
+                        <label
+                          key={entry.id}
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "flex-start",
+                            padding: 6,
+                            borderRadius: 8,
+                            background: checked ? "rgba(255,255,255,0.05)" : "transparent",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const on = e.target.checked;
+                              setSelectedSeedIds((prev) => {
+                                if (on) return Array.from(new Set([...prev, entry.id]));
+                                return prev.filter((id) => id !== entry.id);
+                              });
+                            }}
+                          />
+                          <div style={{ fontSize: 13 }}>
+                            <div style={{ fontWeight: 800 }}>{entry.title}</div>
+                            <div style={{ opacity: 0.78 }}>{entry.authors}</div>
+                            <div style={{ opacity: 0.65, fontSize: 12 }}>
+                              Bewertung: {typeof entry.rating === "number" ? `${entry.rating}/10` : "-"}
+                            </div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          </details>
         </div>
 
         {/* Results */}
@@ -488,7 +605,7 @@ export default function RecommendationsPage() {
 
                     <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
                       <span style={{ fontWeight: 800 }}>Kurzinhalt:</span>{" "}
-                      {x.description ? truncate(x.description, 360) : <span style={{ opacity: 0.7 }}>nicht verfügbar</span>}
+                      {x.description ? truncate(x.description, 520) : <span style={{ opacity: 0.7 }}>nicht verfügbar</span>}
                     </div>
 
                     <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
