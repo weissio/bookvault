@@ -158,6 +158,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       return res.status(200).json({ ok: true, entry });
     }
 
+    const entry = await prisma.libraryEntry.update({ where: { id }, data });
+
     try {
       const becameRead = data.status === "read";
       const hasRating = typeof data.rating === "number" && data.rating >= 1;
