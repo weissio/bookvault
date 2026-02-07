@@ -5,10 +5,12 @@ type MeResponse =
   | { ok: false; error: string };
 
 type SearchItem = {
-  isbn: string;
+  isbn?: string;
   title: string;
   authors: string;
   coverUrl: string | null;
+  description?: string;
+  canSave?: boolean;
 };
 
 type SearchResponse = { ok: true; results: SearchItem[] } | { ok: false; error: string };
@@ -161,6 +163,10 @@ export default function HomePage() {
       pushToast("info", "Bitte einloggen, um Bücher zu speichern.");
       return;
     }
+    if (!item.isbn) {
+      pushToast("info", "Ohne ISBN kann ich das Buch noch nicht speichern.");
+      return;
+    }
     try {
       const r = await fetch("/api/library/add", {
         method: "POST",
@@ -217,6 +223,10 @@ export default function HomePage() {
           }
           // best guess: first result
           const pick = j.results[0];
+          if (!pick?.isbn) {
+            failCount++;
+            continue;
+          }
           const r2 = await fetch("/api/library/add", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -472,7 +482,7 @@ export default function HomePage() {
           <div style={{ display: "grid", gap: 10 }}>
             {results.map((r) => (
               <div
-                key={r.isbn}
+                key={r.isbn || `${r.title}-${r.authors}` }
                 style={{
                   padding: 12,
                   borderRadius: 12,
@@ -506,11 +516,17 @@ export default function HomePage() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 900 }}>{r.title}</div>
                   <div style={{ opacity: 0.85 }}>{r.authors}</div>
-                  <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {r.isbn}</div>
+                  {r.description ? (
+                    <div style={{ opacity: 0.7, fontSize: 12, marginTop: 4 }}>
+                      {r.description.slice(0, 180)}{r.description.length > 180 ? "…" : ""}
+                    </div>
+                  ) : null}
+                  <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {r.isbn ? r.isbn : "—"}</div>
                 </div>
 
                 <button
                   onClick={() => void saveBook(r)}
+                  disabled={!user || !r.isbn}
                   style={{
                     padding: "10px 12px",
                     borderRadius: 10,
@@ -521,9 +537,9 @@ export default function HomePage() {
                     minWidth: 110,
                     opacity: user ? 1 : 0.7,
                   }}
-                  title={user ? "In deine Bibliothek speichern" : "Bitte einloggen"}
+                  title={!r.isbn ? "Ohne ISBN nicht speicherbar" : user ? "In deine Bibliothek speichern" : "Bitte einloggen"}
                 >
-                  Speichern
+                  {!r.isbn ? "Keine ISBN" : "Speichern"}
                 </button>
               </div>
             ))}

@@ -1,11 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 
 type Result = {
-  isbn: string;
+  isbn?: string;
   title: string;
   authors: string;
   coverUrl?: string;
   description?: string;
+  canSave?: boolean;
 };
 
 const UA = { "User-Agent": "bookvault-dev/0.1 (local development)" };
@@ -18,6 +19,7 @@ function looksLikeIsbn(input: string) {
 function normalizeIsbn(input: string) {
   return input.replace(/[^0-9Xx]/g, "").toUpperCase();
 }
+
 function isbn13To10(isbn13: string): string | null {
   const n = isbn13.replace(/[^0-9]/g, "");
   if (n.length !== 13) return null;
@@ -32,7 +34,6 @@ function isbn13To10(isbn13: string): string | null {
   return core + check;
 }
 
-
 async function fetchJson(url: string) {
   const r = await fetch(url, { headers: UA });
   if (!r.ok) return null;
@@ -43,13 +44,14 @@ async function fetchJson(url: string) {
   }
 }
 
-async function fetchGoogleBooks(query: string, limit: number): Promise<Result[]> {
+async function fetchGoogleBooks(query: string, limit: number, langRestrict?: string): Promise<Result[]> {
   if (!GOOGLE_BOOKS_API_KEY) return [];
 
   const params = new URLSearchParams();
   params.set("q", query);
   params.set("printType", "books");
   params.set("maxResults", String(Math.min(40, Math.max(1, limit))));
+  if (langRestrict) params.set("langRestrict", langRestrict);
   params.set("key", GOOGLE_BOOKS_API_KEY);
 
   const url = `https://www.googleapis.com/books/v1/volumes?${params.toString()}`;
@@ -75,17 +77,17 @@ async function fetchGoogleBooks(query: string, limit: number): Promise<Result[]>
       }
       if (!isbn && type === "ISBN_10") isbn = val;
     }
-    if (!isbn) continue;
 
     const cover = vi?.imageLinks?.thumbnail || vi?.imageLinks?.smallThumbnail || undefined;
     const desc = typeof vi?.description === "string" ? vi.description.trim() : undefined;
 
     out.push({
-      isbn,
+      isbn: isbn || undefined,
       title,
       authors: authors.length ? authors.join(", ") : "Unbekannt",
       coverUrl: cover,
       description: desc,
+      canSave: Boolean(isbn),
     });
   }
 
@@ -153,22 +155,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (looksLikeIsbn(q)) {
     const isbn = normalizeIsbn(q);
 
-    const gbPrimary = await fetchGoogleBooks(`isbn:${isbn}`, 3);
-    if (gbPrimary.length) {
-      return res.status(200).json({ ok: true, results: gbPrimary.slice(0, 1) });
+    const gbPrimary = await fetchGoogleBooks(`isbn:${isbn}`, 3, "de");
+    const gbHit = gbPrimary.find((x) => x.isbn);
+    if (gbHit?.isbn) {
+      return res.status(200).json({ ok: true, results: [gbHit] });
     }
 
     const isbn10 = isbn13To10(isbn);
     if (isbn10) {
-      const gb10 = await fetchGoogleBooks(`isbn:${isbn10}`, 3);
-      if (gb10.length) {
-        return res.status(200).json({ ok: true, results: gb10.slice(0, 1) });
+      const gb10 = await fetchGoogleBooks(`isbn:${isbn10}`, 3, "de");
+      const gb10Hit = gb10.find((x) => x.isbn);
+      if (gb10Hit?.isbn) {
+        return res.status(200).json({ ok: true, results: [gb10Hit] });
       }
     }
 
-    const gbLoose = await fetchGoogleBooks(isbn, 3);
-    if (gbLoose.length) {
-      return res.status(200).json({ ok: true, results: gbLoose.slice(0, 1) });
+    const gbLoose = await fetchGoogleBooks(isbn, 3, "de");
+    const gbLooseHit = gbLoose.find((x) => x.isbn);
+    if (gbLooseHit?.isbn) {
+      return res.status(200).json({ ok: true, results: [gbLooseHit] });
     }
 
     const j = await fetchJson(`https://openlibrary.org/isbn/${isbn}.json`);
@@ -195,6 +200,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           title: j.title ?? "Ohne Titel",
           authors,
           coverUrl: `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`,
+          canSave: true,
         },
       ],
     });
@@ -206,15 +212,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const TARGET = 20;
   const results: Result[] = [];
   const seenIsbn = new Set<string>();
+  const seenTitleAuthor = new Set<string>();
 
-  // Google Books zuerst
-  const gbResults = await fetchGoogleBooks(q, TARGET);
-  for (const r of gbResults) {
+  function addResult(r: Result) {
+    const isbn = r.isbn ? normalizeIsbn(r.isbn) : "";
+    if (isbn) {
+      if (seenIsbn.has(isbn)) return;
+      seenIsbn.add(isbn);
+      results.push({ ...r, isbn, canSave: true });
+      return;
+    }
+
+    const key = `${r.title.toLowerCase()}|${r.authors.toLowerCase()}`;
+    if (seenTitleAuthor.has(key)) return;
+    seenTitleAuthor.add(key);
+    results.push({ ...r, isbn: undefined, canSave: false });
+  }
+
+  const gbTitle = await fetchGoogleBooks(`intitle:"${q}"`, TARGET, "de");
+  for (const r of gbTitle) {
     if (results.length >= TARGET) break;
-    const isbn = normalizeIsbn(r.isbn);
-    if (seenIsbn.has(isbn)) continue;
-    seenIsbn.add(isbn);
-    results.push({ ...r, isbn });
+    addResult(r);
+  }
+
+  const gbDe = await fetchGoogleBooks(q, TARGET, "de");
+  for (const r of gbDe) {
+    if (results.length >= TARGET) break;
+    addResult(r);
+  }
+
+  const gbFallback = await fetchGoogleBooks(q, TARGET);
+  for (const r of gbFallback) {
+    if (results.length >= TARGET) break;
+    addResult(r);
   }
 
   // OpenLibrary als Fallback/Ergaenzung
@@ -261,6 +291,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       title,
       authors,
       coverUrl: `https://covers.openlibrary.org/b/isbn/${normIsbn}-M.jpg`,
+      canSave: true,
     });
   }
 
