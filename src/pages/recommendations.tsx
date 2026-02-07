@@ -134,7 +134,7 @@ export default function RecommendationsPage() {
     }
   }
 
-  async function load() {
+  async function load(force = false) {
     setLoading(true);
     setMsg(null);
     setData(null);
@@ -145,6 +145,7 @@ export default function RecommendationsPage() {
       params.set("limit", String(limit));
       if (deOnly) params.set("deOnly", "1");
       if (typeFilters.length > 0) params.set("types", typeFilters.join(","));
+      if (force) params.set("force", "1");
 
       const eligibleSet = new Set(eligibleSeedIds);
       const filteredSelected = selectedSeedIds.filter((id) => eligibleSet.has(id));
@@ -460,7 +461,7 @@ export default function RecommendationsPage() {
             </div>
 
             <button
-              onClick={() => void load()}
+              onClick={() => void load(true)}
               style={{
                 marginLeft: "auto",
                 padding: "10px 12px",
@@ -512,7 +513,7 @@ export default function RecommendationsPage() {
             ) : null}
           </div>
 
-          <div style={{ fontSize: 12, opacity: 0.72 }}>(Sprache: {deOnly ? "Nur deutsch" : "Deutsch priorisiert"})</div>
+          <div style={{ fontSize: 12, opacity: 0.72 }}>(Sprache: {deOnly ? "Nur deutsch" : "Deutsch priorisiert"}) • Freeze bis "Neu berechnen"</div>
 
           <details
             style={{

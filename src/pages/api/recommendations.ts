@@ -53,12 +53,17 @@ const AUTHOR_WEIGHT = 12;
 const GERMAN_SCORE_BONUS = 4;
 const WIKIDATA_LANGS = ["en", "de", "es", "fr"] as const;
 const GOOGLE_BOOKS_API_KEY = String(process.env.GOOGLE_BOOKS_API_KEY || "").trim();
+const RECS_CACHE_MAX_ENTRIES = 120;
+const RECS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
 const openLibraryWorkWikidataCache = new Map<string, string | null>();
 const wikidataTitleAuthorCache = new Map<string, string | null>();
 const openLibraryWorkDescriptionCache = new Map<string, string | null>();
 const wikidataDescriptionCache = new Map<string, string | null>();
+
+const recommendationCache = new Map<string, { expiresAt: number; payload: any }>();
 
 function jsonOk(res: NextApiResponse, data: any) {
   res.status(200).json({ ok: true, ...data });
@@ -89,6 +94,46 @@ async function getSessionUser(req: NextApiRequest) {
   });
   return user ?? null;
 }
+
+function cacheKeyForRecommendations(params: {
+  userId: number;
+  seedMode: string;
+  minRating: number;
+  limit: number;
+  deOnly: boolean;
+  seedEntryIds: number[];
+  typeFilter: string[];
+}) {
+  const parts = [
+    `u:${params.userId}`,
+    `seed:${params.seedMode}`,
+    `min:${params.minRating}`,
+    `lim:${params.limit}`,
+    `de:${params.deOnly ? 1 : 0}`,
+    `seedIds:${params.seedEntryIds.join(".")}`,
+    `types:${params.typeFilter.join(".")}`,
+  ];
+  return parts.join("|");
+}
+
+function cacheGetRecommendation(key: string) {
+  const hit = recommendationCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt < Date.now()) {
+    recommendationCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function cacheSetRecommendation(key: string, payload: any) {
+  if (recommendationCache.size >= RECS_CACHE_MAX_ENTRIES) {
+    const oldestKey = recommendationCache.keys().next().value as string | undefined;
+    if (oldestKey) recommendationCache.delete(oldestKey);
+  }
+  recommendationCache.set(key, { expiresAt: Date.now() + RECS_CACHE_TTL_MS, payload });
+}
+
 
 /** -----------------------------
  *  Small utilities
@@ -1258,6 +1303,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const limit = requestedLimit >= 20 ? 20 : 15;
     const minRating = clamp(parseInt(String(req.query.minRating ?? "4"), 10) || 4, 0, 10);
     const seedMode = String(req.query.seedMode ?? "liked");
+    const force = String(req.query.force ?? "") === "1";
     const deOnly = String(req.query.deOnly ?? "") === "1";
     const typeFilterRaw = String(req.query.types ?? "").trim();
     const typeFilter = new Set(typeFilterRaw ? typeFilterRaw.split(",").map((x) => x.trim()).filter(Boolean) : []);
@@ -1279,6 +1325,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.deOnly = deOnly;
     debug.googleBooksEnabled = Boolean(GOOGLE_BOOKS_API_KEY);
     debug.typeFilter = Array.from(typeFilter);
+    debug.force = force;
 
     const entries = await prisma.libraryEntry.findMany({
       where: { userId: user.id },
