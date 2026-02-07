@@ -659,9 +659,10 @@ export default function RecommendationsPage() {
           <div className="panel" style={{ marginTop: 18 }}>
             <div className="panel-title">Transparenz</div>
             <div style={{ marginTop: 6 }} className="muted">
-              Empfehlungen werden ausschließlich aus <b>deiner</b> Bibliothek, deinen Bewertungen und deinen Feedbacks
-              abgeleitet. Es gibt keine externen Verknüpfungen oder Fremddaten. Je mehr Bücher du bewertest (vor allem
-              aus Empfehlungen), desto präziser wird dein persönliches Profil.
+              Empfehlungen starten aus deinem Profil (Bibliothek, Bewertungen, Feedback). Zusätzlich lernt das System
+              aus dem gemeinsamen Weg der Community: Empfehlung → Speichern → Lesen → Bewerten. Diese anonymisierte
+              Rückmeldung verbessert das Empfehlungsmodell für alle. Es gibt keine externen Verknüpfungen oder
+              Fremddaten.
             </div>
           </div>
         </div>
