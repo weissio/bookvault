@@ -626,7 +626,7 @@ export default function RecommendationsPage() {
                     </div>
 
                     <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
-                      <span style={{ fontWeight: 800 }}>Kurzinhalt:</span>{" "}
+                      <span style={{ fontWeight: 800 }}>Inhalt:</span>{" "}
                       {x.description ? truncate(x.description, 520) : <span style={{ opacity: 0.7 }}>nicht verfügbar</span>}
                     </div>
 

@@ -782,6 +782,18 @@ function isGermanDoc(doc: OpenLibraryDoc): boolean {
   return looksGerman(`${title} ${firstSentence}`.trim());
 }
 
+function isGermanDocStrict(doc: OpenLibraryDoc): boolean {
+  const langs = Array.isArray(doc.language) ? doc.language.map((x) => String(x).toLowerCase()) : [];
+  const hasGermanLang = langs.some(
+    (l) => l === "de" || l === "ger" || l === "deu" || l.includes("/ger") || l.includes("/deu") || l.includes("deutsch")
+  );
+  if (!hasGermanLang) return false;
+
+  const title = String(doc.title || "");
+  const firstSentence = descriptionFromDoc(doc) || "";
+  return looksGerman(title) || looksGerman(firstSentence);
+}
+
 async function openLibraryDescriptionFromWorkKey(workKey: string | null): Promise<string | null> {
   const wk = String(workKey || "").trim();
   if (!wk) return null;
@@ -1211,7 +1223,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const wk = workKeyFromDoc(doc);
       const german = isGermanDoc(doc);
-      if (deOnly && !german) continue;
+      if (deOnly && !isGermanDocStrict(doc)) continue;
 
       const target = german ? scoredGerman : scoredOther;
       target.push({
