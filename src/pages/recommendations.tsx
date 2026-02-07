@@ -74,6 +74,7 @@ export default function RecommendationsPage() {
   const [minRating, setMinRating] = useState(4);
   const [limit, setLimit] = useState(15);
   const [deOnly, setDeOnly] = useState(false);
+  const [typeFilters, setTypeFilters] = useState<string[]>([]);
 
   const [data, setData] = useState<RecResponse | null>(null);
   const [librarySeeds, setLibrarySeeds] = useState<LibrarySeedEntry[]>([]);
@@ -142,6 +143,7 @@ export default function RecommendationsPage() {
       params.set("minRating", String(minRating));
       params.set("limit", String(limit));
       if (deOnly) params.set("deOnly", "1");
+      if (typeFilters.length > 0) params.set("types", typeFilters.join(","));
 
       const eligibleSet = new Set(eligibleSeedIds);
       const filteredSelected = selectedSeedIds.filter((id) => eligibleSet.has(id));
@@ -173,7 +175,7 @@ export default function RecommendationsPage() {
     if (!user) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, seedMode, minRating, limit, deOnly, selectedSeedIds.join(","), eligibleSeedIds.join(",")]);
+  }, [user, seedMode, minRating, limit, deOnly, typeFilters.join(","), selectedSeedIds.join(","), eligibleSeedIds.join(",")]);
 
   useEffect(() => {
     const eligibleSet = new Set(eligibleSeedIds);
@@ -411,6 +413,49 @@ export default function RecommendationsPage() {
                 <option value="de_pref">Deutsch priorisieren</option>
                 <option value="de_only">Nur deutsch (streng)</option>
               </select>
+            </div>
+
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontWeight: 900 }}>Literaturtyp</label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[
+                  { id: "fiction", label: "Roman" },
+                  { id: "nonfiction", label: "Sachbuch" },
+                  { id: "selfhelp", label: "Ratgeber" },
+                  { id: "biography", label: "Biografie" },
+                  { id: "science", label: "Wissenschaft" },
+                ].map((t) => {
+                  const checked = typeFilters.includes(t.id);
+                  return (
+                    <label
+                      key={t.id}
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        alignItems: "center",
+                        padding: "6px 8px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.18)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          setTypeFilters((prev) => {
+                            if (on) return Array.from(new Set([...prev, t.id]));
+                            return prev.filter((x) => x !== t.id);
+                          });
+                        }}
+                      />
+                      <span>{t.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.72 }}>Leer lassen = automatische Verteilung nach deiner Bibliothek.</div>
             </div>
 
             <button

@@ -14,6 +14,7 @@ type Recommendation = {
   score: number;
   reasons: Reason[];
   subjects: string[];
+  recType?: string;
 };
 
 type Profile = {
@@ -165,6 +166,35 @@ function parseSubjects(raw: unknown): string[] {
   }
 
   return [t];
+}
+
+const TYPE_LABELS = {
+  fiction: "Roman/Fiktion",
+  nonfiction: "Sachbuch",
+  selfhelp: "Ratgeber",
+  biography: "Biografie",
+  science: "Wissenschaft/Philosophie",
+  business: "Wirtschaft",
+  children: "Kinder/Jugend",
+  poetry: "Lyrik",
+  unknown: "Unklar",
+} as const;
+
+type RecType = keyof typeof TYPE_LABELS;
+
+function classifyTypeFromSubjects(subjects: string[]): RecType {
+  const blob = subjects.map((s) => norm(s)).join(" ");
+  if (!blob) return "unknown";
+
+  if (/(poetry|gedicht|lyrik)/.test(blob)) return "poetry";
+  if (/(children|juvenile|kinder|jugend|teen)/.test(blob)) return "children";
+  if (/(biography|autobiography|memoir|biografie|lebenserinnerung)/.test(blob)) return "biography";
+  if (/(self help|self-help|ratgeber|hilfe|partnerschaft|beziehung|psychology|psychologie|health|gesundheit|depression)/.test(blob)) return "selfhelp";
+  if (/(business|wirtschaft|management|leadership|finance|finanz|marketing)/.test(blob)) return "business";
+  if (/(science|wissenschaft|philosophy|philosophie|history|geschichte)/.test(blob)) return "science";
+  if (/(novel|roman|fiction|literature|literatur|erz[aä]hlung)/.test(blob)) return "fiction";
+
+  return "nonfiction";
 }
 
 const STORY_STOPWORDS = new Set([
@@ -649,6 +679,59 @@ function computeProfile(entries: any[], minRating: number): Profile {
     .slice(0, 3);
 
   return { likedCount: liked.length, topSubjects, topAuthors };
+}
+
+function computeTypeDistribution(entries: any[], minRating: number) {
+  const liked = entries.filter(
+    (e) => e.status === "read" && typeof e.rating === "number" && (e.rating ?? 0) >= minRating
+  );
+
+  const counts = new Map<RecType, number>();
+  for (const e of liked) {
+    const subjects = parseSubjects(e.subjects);
+    const t = classifyTypeFromSubjects(subjects);
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+
+  const total = Array.from(counts.values()).reduce((a, b) => a + b, 0) || 1;
+  const shares = Array.from(counts.entries())
+    .map(([type, count]) => ({ type, count, share: count / total }))
+    .sort((a, b) => b.share - a.share);
+
+  return { counts, shares, total };
+}
+
+function allocateTypeQuota(shares: Array<{ type: RecType; share: number }>, limit: number) {
+  if (limit <= 0) return new Map<RecType, number>();
+  const out = new Map<RecType, number>();
+  let used = 0;
+
+  for (const s of shares) {
+    const n = Math.floor(s.share * limit);
+    if (n > 0) {
+      out.set(s.type, n);
+      used += n;
+    }
+  }
+
+  if (shares.length > 0) {
+    const top = shares[0].type;
+    if (!out.has(top)) {
+      out.set(top, 1);
+      used += 1;
+    }
+  }
+
+  let remaining = limit - used;
+  let i = 0;
+  while (remaining > 0 && shares.length > 0) {
+    const t = shares[i % shares.length].type;
+    out.set(t, (out.get(t) ?? 0) + 1);
+    remaining -= 1;
+    i += 1;
+  }
+
+  return out;
 }
 
 /** -----------------------------
@@ -1176,6 +1259,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const minRating = clamp(parseInt(String(req.query.minRating ?? "4"), 10) || 4, 0, 10);
     const seedMode = String(req.query.seedMode ?? "liked");
     const deOnly = String(req.query.deOnly ?? "") === "1";
+    const typeFilterRaw = String(req.query.types ?? "").trim();
+    const typeFilter = new Set(typeFilterRaw ? typeFilterRaw.split(",").map((x) => x.trim()).filter(Boolean) : []);
     const seedIdsRaw = String(req.query.seedEntryIds ?? "").trim();
     const selectedSeedIds = new Set<number>(
       seedIdsRaw
@@ -1193,6 +1278,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.seedMode = seedMode;
     debug.deOnly = deOnly;
     debug.googleBooksEnabled = Boolean(GOOGLE_BOOKS_API_KEY);
+    debug.typeFilter = Array.from(typeFilter);
 
     const entries = await prisma.libraryEntry.findMany({
       where: { userId: user.id },
@@ -1216,6 +1302,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const profile = computeProfile(seedEntries, minRating);
     const storyProfile = buildStoryProfile(seedEntries, minRating);
+    const typeDistribution = computeTypeDistribution(seedEntries, minRating);
     debug.selectedSeedCount = selectedSeedIds.size;
     debug.seedPoolCount = seedEntries.length;
     debug.likedCount = profile.likedCount;
@@ -1223,6 +1310,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.topAuthorsCount = profile.topAuthors.length;
     debug.storyTermsCount = storyProfile.topTerms.length;
     debug.storyMotifsCount = storyProfile.topMotifs.length;
+    debug.typeShares = typeDistribution.shares;
 
     if (profile.likedCount === 0) {
       debug.totalMs = Date.now() - startedAt;
@@ -1326,6 +1414,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           score: score + (german ? GERMAN_SCORE_BONUS : 0),
           reasons,
           subjects,
+          recType: classifyTypeFromSubjects(subjects),
         },
       });
     }
@@ -1349,7 +1438,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.editionLookupsSucceeded = 0;
     debug.isbnResolvedViaEditionKey = 0;
 
-    const out: Recommendation[] = [];
+    const pool: Recommendation[] = [];
 
     let afterOwnedIsbn = 0;
     let afterOwnedWork = 0;
@@ -1380,7 +1469,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     for (const item of scored) {
-      if (out.length >= limit) break;
+      if (pool.length >= limit * 3) break;
 
       const r: Recommendation = { ...item.rec, recId: "", workKey: item.workKey };
       const wk = item.workKey;
@@ -1489,9 +1578,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       seenIsbn.add(r.isbn);
       r.workKey = resolvedWorkKey;
       r.recId = resolvedCanonicalKey || (resolvedWorkKey ? `wk:${resolvedWorkKey}` : `isbn:${r.isbn}`);
-      out.push(r);
+      pool.push(r);
     }
 
+    const typeQuota = typeDistribution.shares.length
+      ? allocateTypeQuota(typeDistribution.shares.map((s) => ({ type: s.type, share: s.share })), limit)
+      : new Map();
+
+    let filteredPool = pool.slice();
+    if (typeFilter.size > 0) {
+      filteredPool = filteredPool.filter((r) => r.recType && typeFilter.has(r.recType));
+    }
+
+    const byType = new Map<string, Recommendation[]>();
+    for (const r of filteredPool) {
+      const t = r.recType || "unknown";
+      const arr = byType.get(t) || [];
+      arr.push(r);
+      byType.set(t, arr);
+    }
+    for (const arr of byType.values()) arr.sort((a, b) => b.score - a.score);
+
+    const out: Recommendation[] = [];
+    if (typeFilter.size === 0 && typeQuota.size > 0) {
+      for (const [t, q] of typeQuota.entries()) {
+        const arr = byType.get(t) || [];
+        for (let i = 0; i < arr.length && i < q && out.length < limit; i++) {
+          out.push(arr[i]);
+        }
+      }
+    }
+
+    if (out.length < limit) {
+      const used = new Set(out.map((r) => r.recId));
+      const rest = filteredPool.filter((r) => !used.has(r.recId)).sort((a, b) => b.score - a.score);
+      for (const r of rest) {
+        if (out.length >= limit) break;
+        out.push(r);
+      }
+    }
+
+    debug.poolCount = pool.length;
     const missingDescIdx: number[] = [];
     for (let i = 0; i < out.length; i++) {
       if (!out[i].description && out[i].workKey) missingDescIdx.push(i);
