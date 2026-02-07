@@ -207,6 +207,9 @@ export default function RecommendationsPage() {
           coverUrl: item.coverUrl,
           status: "unread",
           rating: null,
+          source: "recommendation",
+          recId: item.recId,
+          workKey: item.workKey,
         }),
       });
       const j = (await r.json()) as AddResponse;

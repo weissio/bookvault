@@ -16,6 +16,7 @@ type Entry = {
   notes: string | null;
   subjects: string | null;
   description: string | null;
+  recommended?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -85,6 +86,12 @@ function statusDot(s: string) {
 
 function hasMeaningfulText(t: string | null) {
   return !!(t && String(t).trim().length > 0);
+}
+
+function primaryGenre(rawSubjects: string | null) {
+  const subs = safeParseSubjects(rawSubjects);
+  if (subs.length === 0) return "Ohne Genre";
+  return subs[0];
 }
 
 export default function LibraryPage() {
@@ -167,6 +174,23 @@ export default function LibraryPage() {
       return true;
     });
   }, [entries, filterStatus, filterRating]);
+
+  const recommendedEntries = useMemo(() => filtered.filter((e) => !!e.recommended), [filtered]);
+  const shelfEntries = useMemo(() => filtered.filter((e) => !e.recommended), [filtered]);
+
+  const groupedShelves = useMemo(() => {
+    const groups = new Map<string, Entry[]>();
+    for (const entry of shelfEntries) {
+      const key = primaryGenre(entry.subjects);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(entry);
+    }
+
+    return Array.from(groups.entries()).sort((a, b) => {
+      if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+      return a[0].localeCompare(b[0], "de");
+    });
+  }, [shelfEntries]);
 
   // If current open entry is filtered out or deleted, close it
   useEffect(() => {
@@ -270,16 +294,386 @@ export default function LibraryPage() {
   const SUBJECTS_COLLAPSE_COUNT = 10;
   const DESC_COLLAPSE_CHARS = 420;
 
+  function renderEntryCard(entry: Entry, { highlight }: { highlight?: boolean } = {}) {
+    const detailsOpen = openEntryId === entry.id;
+    const detailsId = `entry_details_${entry.id}`;
+
+    const subs = safeParseSubjects(entry.subjects);
+    const isSubsExpanded = !!expandedSubjects[entry.id];
+    const subsToShow = isSubsExpanded ? subs : subs.slice(0, SUBJECTS_COLLAPSE_COUNT);
+    const needsSubsToggle = subs.length > SUBJECTS_COLLAPSE_COUNT;
+
+    const desc = entry.description ? String(entry.description) : "";
+    const hasDesc = desc.trim().length > 0;
+    const isDescExpanded = !!expandedDesc[entry.id];
+    const descToShow = isDescExpanded ? desc : truncate(desc, DESC_COLLAPSE_CHARS);
+    const needsDescToggle = hasDesc && desc.length > DESC_COLLAPSE_CHARS;
+
+    const hasNotes = hasMeaningfulText(entry.notes);
+
+    const topGenres = subs.slice(0, 3);
+    const moreGenres = subs.length > 3 ? subs.length - 3 : 0;
+
+    return (
+      <div key={entry.id} className={`book-card${highlight ? " recommended" : ""}`}>
+        <button
+          type="button"
+          onClick={() => toggleDetails(entry.id)}
+          aria-expanded={detailsOpen}
+          aria-controls={detailsId}
+          style={{
+            width: "100%",
+            textAlign: "left",
+            border: "none",
+            background: "transparent",
+            color: "inherit",
+            padding: 0,
+            cursor: "pointer",
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.preventDefault();
+              toggleDetails(entry.id);
+            }
+          }}
+        >
+          <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+            {entry.coverUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={entry.coverUrl}
+                alt=""
+                width={64}
+                height={92}
+                style={{ borderRadius: 12, objectFit: "cover", flex: "0 0 auto", boxShadow: "0 6px 14px rgba(0,0,0,0.15)" }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: 64,
+                  height: 92,
+                  borderRadius: 12,
+                  border: "1px dashed var(--line)",
+                  opacity: 0.6,
+                  flex: "0 0 auto",
+                }}
+              />
+            )}
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ minWidth: 220 }}>
+                    <div
+                      style={{
+                        fontWeight: 800,
+                        fontSize: 16,
+                        lineHeight: 1.25,
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "baseline",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span
+                        style={{
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {entry.title}
+                      </span>
+                      {highlight && <span className="badge">Empfohlen</span>}
+                    </div>
+
+                    <div
+                      style={{
+                        opacity: 0.85,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {entry.authors}
+                    </div>
+
+                    <div className="book-meta-row" style={{ marginTop: 8 }}>
+                      <span>
+                        {statusDot(entry.status)} {statusLabel(entry.status)}
+                      </span>
+
+                      <span style={{ opacity: 0.6 }}>•</span>
+
+                      <span>{entry.rating ? `★ ${entry.rating}/10` : "— bewertet"}</span>
+
+                      {topGenres.length > 0 && (
+                        <>
+                          <span style={{ opacity: 0.6 }}>•</span>
+                          <span>
+                            Genres: {topGenres.join(", ")}
+                            {moreGenres > 0 ? ` +${moreGenres}` : ""}
+                          </span>
+                        </>
+                      )}
+
+                      {hasDesc && (
+                        <>
+                          <span style={{ opacity: 0.6 }}>•</span>
+                          <span>Inhaltsangabe</span>
+                        </>
+                      )}
+
+                      {hasNotes && (
+                        <>
+                          <span style={{ opacity: 0.6 }}>•</span>
+                          <span>Notizen</span>
+                        </>
+                      )}
+                    </div>
+
+                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.55 }}>ISBN: {entry.isbn}</div>
+                  </div>
+                </div>
+
+                <div
+                  aria-hidden="true"
+                  style={{
+                    fontWeight: 900,
+                    opacity: 0.65,
+                    paddingLeft: 10,
+                    flex: "0 0 auto",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    marginTop: 2,
+                  }}
+                >
+                  {detailsOpen ? "▾" : "▸"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </button>
+
+        {detailsOpen && (
+          <div id={detailsId} style={{ marginTop: 12 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontWeight: 800, fontSize: 12, opacity: 0.9 }}>Status</div>
+                <select
+                  value={entry.status}
+                  onChange={(ev) => void updateEntry(entry.id, { status: ev.target.value }, { quietToast: true })}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid var(--line)",
+                    background: "var(--paper-2)",
+                    minWidth: 220,
+                  }}
+                >
+                  <option value="unread">Ungelesen</option>
+                  <option value="reading">In Lektüre</option>
+                  <option value="paused">Pausiert</option>
+                  <option value="read">Gelesen</option>
+                </select>
+              </div>
+
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontWeight: 800, fontSize: 12, opacity: 0.9 }}>Bewertung</div>
+                <select
+                  value={entry.rating == null ? "" : String(entry.rating)}
+                  onChange={(ev) => {
+                    const v = ev.target.value;
+                    void updateEntry(entry.id, { rating: v === "" ? null : Number(v) }, { quietToast: true });
+                  }}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid var(--line)",
+                    background: "var(--paper-2)",
+                    minWidth: 220,
+                  }}
+                >
+                  <option value="">—</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                </select>
+              </div>
+
+              <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button type="button" onClick={() => toggleDetails(entry.id)} className="btn btn-ghost" title="Details einklappen">
+                  Einklappen
+                </button>
+              </div>
+            </div>
+
+            {subs.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>Genre / Themen</div>
+                <div className="chips">
+                  {subsToShow.map((s, idx) => (
+                    <span key={idx} className="chip">
+                      {s}
+                    </span>
+                  ))}
+
+                  {needsSubsToggle && !isSubsExpanded && (
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        setExpandedSubjects((p) => ({ ...p, [entry.id]: true }));
+                      }}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "inherit",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                        opacity: 0.9,
+                        padding: 0,
+                        fontSize: 12,
+                      }}
+                    >
+                      +{subs.length - SUBJECTS_COLLAPSE_COUNT} mehr
+                    </button>
+                  )}
+
+                  {needsSubsToggle && isSubsExpanded && (
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        setExpandedSubjects((p) => ({ ...p, [entry.id]: false }));
+                      }}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "inherit",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                        opacity: 0.9,
+                        padding: 0,
+                        fontSize: 12,
+                      }}
+                    >
+                      Weniger
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {hasDesc && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>Inhaltsangabe</div>
+                <div style={{ opacity: 0.9, whiteSpace: "pre-wrap" }}>
+                  {descToShow}{" "}
+                  {needsDescToggle && (
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        setExpandedDesc((p) => ({ ...p, [entry.id]: !p[entry.id] }));
+                      }}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "inherit",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                        opacity: 0.9,
+                        padding: 0,
+                      }}
+                    >
+                      {isDescExpanded ? "Weniger" : "Mehr anzeigen"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontWeight: 800, marginBottom: 6 }}>Notizen</div>
+              <textarea
+                defaultValue={entry.notes ?? ""}
+                placeholder="Eigene Gedanken, Zitate, warum du’s lesen willst…"
+                rows={3}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid var(--line)",
+                  background: "var(--paper-2)",
+                  resize: "vertical",
+                }}
+                onBlur={(ev) => {
+                  const next = ev.currentTarget.value;
+                  if ((entry.notes ?? "") === next) return;
+                  void updateEntry(entry.id, { notes: next });
+                }}
+              />
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Speichert beim Verlassen des Feldes.</div>
+            </div>
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={(ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  void deleteEntry(entry.id, entry.title);
+                }}
+                className="btn btn-ghost"
+                style={{ fontSize: 12, padding: "6px 10px", opacity: 0.75 }}
+                title="Eintrag löschen"
+              >
+                Löschen
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (me && (me as any).ok && !user) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-        <div style={{ width: "100%", maxWidth: 980 }}>
-          <h1 style={{ fontSize: 28, marginBottom: 6 }}>Deine Bibliothek</h1>
-          <p style={{ opacity: 0.85, marginTop: 0 }}>Bitte einloggen, um deine Bibliothek zu sehen.</p>
-          <div style={{ marginTop: 16 }}>
-            <a href="/" style={{ textDecoration: "underline" }}>
-              ← Zur Startseite (Login)
-            </a>
+      <div className="app-shell">
+        <div className="page">
+          <header className="page-header">
+            <div>
+              <h1 className="page-title">Deine Bibliothek</h1>
+              <p className="page-subtitle">Bitte einloggen, um deine Bibliothek zu sehen.</p>
+            </div>
+            <div className="nav-links">
+              <a className="nav-pill" href="/">
+                Zur Startseite
+              </a>
+            </div>
+          </header>
+
+          <div className="panel" style={{ marginTop: 18 }}>
+            <div className="panel-title">Login erforderlich</div>
+            <div style={{ marginTop: 6 }} className="muted">
+              Deine persönliche Bibliothek ist geschützt. Bitte melde dich an.
+            </div>
           </div>
         </div>
       </div>
@@ -287,92 +681,56 @@ export default function LibraryPage() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-      {/* Toasts */}
-      <div
-        style={{
-          position: "fixed",
-          top: 14,
-          right: 14,
-          zIndex: 9999,
-          display: "grid",
-          gap: 8,
-          width: 360,
-          maxWidth: "92vw",
-        }}
-      >
+    <div className="app-shell">
+      <div className="toast-stack">
         {toasts.map((t) => (
-          <div
-            key={t.id}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.16)",
-              background: "rgba(0,0,0,0.55)",
-              backdropFilter: "blur(6px)",
-              boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
-              fontWeight: 800,
-              opacity: 0.98,
-            }}
-          >
+          <div key={t.id} className="toast">
             <span style={{ opacity: 0.85 }}>{t.kind === "success" ? "✅ " : t.kind === "error" ? "⚠️ " : "ℹ️ "}</span>
             {t.text}
           </div>
         ))}
       </div>
 
-      <div style={{ width: "100%", maxWidth: 1050 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
+      <div className="page">
+        <header className="page-header">
           <div>
-            <h1 style={{ fontSize: 28, marginBottom: 6 }}>Deine Bibliothek</h1>
-            <p style={{ marginTop: 0, opacity: 0.85 }}>Übersicht zuerst – Details nur bei Bedarf.</p>
+            <h1 className="page-title">Deine Bibliothek</h1>
+            <p className="page-subtitle">Dein Wohnzimmer für Bücher, Notizen und Bewertungen.</p>
           </div>
 
           <div style={{ textAlign: "right" }}>
-            <a href="/" style={{ textDecoration: "underline" }}>
-              ← Zur Suche
-            </a>
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{user ? user.email : ""}</div>
+            <div className="nav-links">
+              <a className="nav-pill" href="/">
+                Suche
+              </a>
+              <a className="nav-pill primary" href="/recommendations">
+                Empfehlungen
+              </a>
+              <a className="nav-pill" href="/blocklist">
+                Sperrliste
+              </a>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12 }} className="muted">
+              {user ? user.email : ""}
+            </div>
           </div>
-        </div>
+        </header>
 
-        {msg && <div style={{ marginTop: 10, opacity: 0.9 }}>{msg}</div>}
+        {msg && (
+          <div className="panel">
+            <div className="muted">{msg}</div>
+          </div>
+        )}
 
-        {/* Top bar */}
-        <div
-          style={{
-            marginTop: 14,
-            padding: 12,
-            borderRadius: 12,
-            border: "1px solid rgba(255,255,255,0.12)",
-            display: "flex",
-            gap: 12,
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <div style={{ fontWeight: 900 }}>Deine Einträge</div>
-            <div style={{ opacity: 0.75 }}>({filtered.length})</div>
+        <div className="panel">
+          <div className="toolbar">
+            <div className="toolbar-group">
+              <div className="panel-title">Deine Einträge</div>
+              <div className="muted">({filtered.length})</div>
 
-            <div style={{ width: 1, height: 18, background: "rgba(255,255,255,0.12)" }} />
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <div style={{ display: "grid", gap: 4 }}>
-                <label style={{ fontSize: 12, fontWeight: 900 }}>Status</label>
-                <select
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.18)",
-                    background: "transparent",
-                    color: "inherit",
-                    minWidth: 180,
-                  }}
-                >
+              <div className="filter-field">
+                <label>Status</label>
+                <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
                   <option value="all">Alle</option>
                   <option value="unread">Ungelesen</option>
                   <option value="reading">In Lektüre</option>
@@ -381,514 +739,77 @@ export default function LibraryPage() {
                 </select>
               </div>
 
-              <div style={{ display: "grid", gap: 4 }}>
-                <label style={{ fontSize: 12, fontWeight: 900 }}>Bewertung</label>
-                <select
-                  value={filterRating}
-                  onChange={(e) => setFilterRating(e.target.value)}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.18)",
-                    background: "transparent",
-                    color: "inherit",
-                    minWidth: 180,
-                  }}
-                >
+              <div className="filter-field">
+                <label>Bewertung</label>
+                <select value={filterRating} onChange={(e) => setFilterRating(e.target.value)}>
                   <option value="all">Alle</option>
                   <option value="rated">Nur bewertet</option>
                   <option value="unrated">Nur unbewertet</option>
                 </select>
               </div>
             </div>
-          </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <button
-              type="button"
-              onClick={() => void exportJson()}
-              style={{
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "transparent",
-                cursor: "pointer",
-                fontWeight: 900,
-              }}
-            >
-              Export (JSON)
-            </button>
+            <div className="toolbar-group">
+              <button type="button" onClick={() => void exportJson()} className="btn btn-soft">
+                Export (JSON)
+              </button>
 
-            <input
-              ref={fileRef}
-              type="file"
-              accept="application/json"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void importJsonFile(f);
-                e.currentTarget.value = "";
-              }}
-            />
+              <input
+                ref={fileRef}
+                type="file"
+                accept="application/json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void importJsonFile(f);
+                  e.currentTarget.value = "";
+                }}
+              />
 
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              style={{
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "transparent",
-                cursor: "pointer",
-                fontWeight: 900,
-              }}
-            >
-              Import (JSON)
-            </button>
+              <button type="button" onClick={() => fileRef.current?.click()} className="btn">
+                Import (JSON)
+              </button>
 
-            <button
-              type="button"
-              onClick={() => void loadEntries()}
-              style={{
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "transparent",
-                cursor: "pointer",
-                fontWeight: 900,
-                opacity: 0.9,
-              }}
-              title="Neu laden"
-            >
-              Refresh
-            </button>
+              <button type="button" onClick={() => void loadEntries()} className="btn btn-ghost" title="Neu laden">
+                Refresh
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Entries */}
-        <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+        <div className="section">
           {loading ? (
-            <div style={{ opacity: 0.8 }}>Lädt…</div>
+            <div className="muted">Lädt…</div>
           ) : filtered.length === 0 ? (
-            <div style={{ opacity: 0.8 }}>Noch keine Einträge.</div>
+            <div className="muted">Noch keine Einträge.</div>
           ) : (
-            filtered.map((e) => {
-              const detailsOpen = openEntryId === e.id;
-              const detailsId = `entry_details_${e.id}`;
-
-              const subs = safeParseSubjects(e.subjects);
-              const isSubsExpanded = !!expandedSubjects[e.id];
-              const subsToShow = isSubsExpanded ? subs : subs.slice(0, SUBJECTS_COLLAPSE_COUNT);
-              const needsSubsToggle = subs.length > SUBJECTS_COLLAPSE_COUNT;
-
-              const desc = e.description ? String(e.description) : "";
-              const hasDesc = desc.trim().length > 0;
-              const isDescExpanded = !!expandedDesc[e.id];
-              const descToShow = isDescExpanded ? desc : truncate(desc, DESC_COLLAPSE_CHARS);
-              const needsDescToggle = hasDesc && desc.length > DESC_COLLAPSE_CHARS;
-
-              const hasNotes = hasMeaningfulText(e.notes);
-
-              const topGenres = subs.slice(0, 3);
-              const moreGenres = subs.length > 3 ? subs.length - 3 : 0;
-
-              return (
-                <div
-                  key={e.id}
-                  style={{
-                    padding: 12,
-                    borderRadius: 12,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleDetails(e.id)}
-                    aria-expanded={detailsOpen}
-                    aria-controls={detailsId}
-                    style={{
-                      width: "100%",
-                      textAlign: "left",
-                      border: "none",
-                      background: "transparent",
-                      color: "inherit",
-                      padding: 0,
-                      cursor: "pointer",
-                    }}
-                    onKeyDown={(ev) => {
-                      if (ev.key === "Enter" || ev.key === " ") {
-                        ev.preventDefault();
-                        toggleDetails(e.id);
-                      }
-                    }}
-                  >
-                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                      {e.coverUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={e.coverUrl}
-                          alt=""
-                          width={58}
-                          height={86}
-                          style={{ borderRadius: 10, objectFit: "cover", flex: "0 0 auto" }}
-                        />
-                      ) : (
-                        <div
-                          style={{
-                            width: 58,
-                            height: 86,
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            opacity: 0.6,
-                            flex: "0 0 auto",
-                          }}
-                        />
-                      )}
-
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            gap: 12,
-                            alignItems: "flex-start",
-                          }}
-                        >
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ minWidth: 220 }}>
-                              <div
-                                style={{
-                                  fontWeight: 900,
-                                  fontSize: 16,
-                                  lineHeight: 1.25,
-                                  display: "flex",
-                                  gap: 8,
-                                  alignItems: "baseline",
-                                  flexWrap: "wrap",
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    minWidth: 0,
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                >
-                                  {e.title}
-                                </span>
-                              </div>
-
-                              <div
-                                style={{
-                                  opacity: 0.85,
-                                  minWidth: 0,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {e.authors}
-                              </div>
-
-                              <div
-                                style={{
-                                  marginTop: 8,
-                                  fontSize: 12,
-                                  opacity: 0.78,
-                                  display: "flex",
-                                  gap: 10,
-                                  flexWrap: "wrap",
-                                }}
-                              >
-                                <span>
-                                  {statusDot(e.status)} {statusLabel(e.status)}
-                                </span>
-
-                                <span style={{ opacity: 0.6 }}>•</span>
-
-                                <span>{e.rating ? `★ ${e.rating}/10` : "— bewertet"}</span>
-
-                                {topGenres.length > 0 && (
-                                  <>
-                                    <span style={{ opacity: 0.6 }}>•</span>
-                                    <span>
-                                      Genres: {topGenres.join(", ")}
-                                      {moreGenres > 0 ? ` +${moreGenres}` : ""}
-                                    </span>
-                                  </>
-                                )}
-
-                                {hasDesc && (
-                                  <>
-                                    <span style={{ opacity: 0.6 }}>•</span>
-                                    <span>Inhaltsangabe</span>
-                                  </>
-                                )}
-
-                                {hasNotes && (
-                                  <>
-                                    <span style={{ opacity: 0.6 }}>•</span>
-                                    <span>Notizen</span>
-                                  </>
-                                )}
-                              </div>
-
-                              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.55 }}>ISBN: {e.isbn}</div>
-                            </div>
-                          </div>
-
-                          <div
-                            aria-hidden="true"
-                            style={{
-                              fontWeight: 900,
-                              opacity: 0.75,
-                              paddingLeft: 10,
-                              flex: "0 0 auto",
-                              fontSize: 16,
-                              lineHeight: 1,
-                              marginTop: 2,
-                            }}
-                          >
-                            {detailsOpen ? "▾" : "▸"}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-
-                  {detailsOpen && (
-                    <div id={detailsId} style={{ marginTop: 12 }}>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Status</div>
-                          <select
-                            value={e.status}
-                            onChange={(ev) => void updateEntry(e.id, { status: ev.target.value }, { quietToast: true })}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: 10,
-                              border: "1px solid rgba(255,255,255,0.18)",
-                              background: "transparent",
-                              color: "inherit",
-                              minWidth: 220,
-                            }}
-                          >
-                            <option value="unread">Ungelesen</option>
-                            <option value="reading">In Lektüre</option>
-                            <option value="paused">Pausiert</option>
-                            <option value="read">Gelesen</option>
-                          </select>
-                        </div>
-
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <div style={{ fontWeight: 900, fontSize: 12, opacity: 0.9 }}>Bewertung</div>
-                          <select
-                            value={e.rating == null ? "" : String(e.rating)}
-                            onChange={(ev) => {
-                              const v = ev.target.value;
-                              void updateEntry(e.id, { rating: v === "" ? null : Number(v) }, { quietToast: true });
-                            }}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: 10,
-                              border: "1px solid rgba(255,255,255,0.18)",
-                              background: "transparent",
-                              color: "inherit",
-                              minWidth: 220,
-                            }}
-                          >
-                            <option value="">—</option>
-                            <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3">3</option>
-                            <option value="4">4</option>
-                            <option value="5">5</option>
-                            <option value="6">6</option>
-                            <option value="7">7</option>
-                            <option value="8">8</option>
-                            <option value="9">9</option>
-                            <option value="10">10</option>
-                          </select>
-                        </div>
-
-                        <div style={{ marginLeft: "auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          <button
-                            type="button"
-                            onClick={() => toggleDetails(e.id)}
-                            style={{
-                              padding: "10px 12px",
-                              borderRadius: 10,
-                              border: "1px solid rgba(255,255,255,0.18)",
-                              background: "transparent",
-                              cursor: "pointer",
-                              fontWeight: 900,
-                              opacity: 0.9,
-                            }}
-                            title="Details einklappen"
-                          >
-                            Einklappen
-                          </button>
-                        </div>
-                      </div>
-
-                      {subs.length > 0 && (
-                        <div style={{ marginTop: 14 }}>
-                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Genre / Themen</div>
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                            {subsToShow.map((s, idx) => (
-                              <span
-                                key={idx}
-                                style={{
-                                  fontSize: 12,
-                                  padding: "4px 8px",
-                                  borderRadius: 999,
-                                  border: "1px solid rgba(255,255,255,0.14)",
-                                  opacity: 0.95,
-                                }}
-                              >
-                                {s}
-                              </span>
-                            ))}
-
-                            {needsSubsToggle && !isSubsExpanded && (
-                              <button
-                                type="button"
-                                onClick={(ev) => {
-                                  ev.preventDefault();
-                                  ev.stopPropagation();
-                                  setExpandedSubjects((p) => ({ ...p, [e.id]: true }));
-                                }}
-                                style={{
-                                  border: "none",
-                                  background: "transparent",
-                                  color: "inherit",
-                                  textDecoration: "underline",
-                                  cursor: "pointer",
-                                  fontWeight: 900,
-                                  opacity: 0.9,
-                                  padding: 0,
-                                  fontSize: 12,
-                                }}
-                              >
-                                +{subs.length - SUBJECTS_COLLAPSE_COUNT} mehr
-                              </button>
-                            )}
-
-                            {needsSubsToggle && isSubsExpanded && (
-                              <button
-                                type="button"
-                                onClick={(ev) => {
-                                  ev.preventDefault();
-                                  ev.stopPropagation();
-                                  setExpandedSubjects((p) => ({ ...p, [e.id]: false }));
-                                }}
-                                style={{
-                                  border: "none",
-                                  background: "transparent",
-                                  color: "inherit",
-                                  textDecoration: "underline",
-                                  cursor: "pointer",
-                                  fontWeight: 900,
-                                  opacity: 0.9,
-                                  padding: 0,
-                                  fontSize: 12,
-                                }}
-                              >
-                                Weniger
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {hasDesc && (
-                        <div style={{ marginTop: 14 }}>
-                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Inhaltsangabe</div>
-                          <div style={{ opacity: 0.9, whiteSpace: "pre-wrap" }}>
-                            {descToShow}{" "}
-                            {needsDescToggle && (
-                              <button
-                                type="button"
-                                onClick={(ev) => {
-                                  ev.preventDefault();
-                                  ev.stopPropagation();
-                                  setExpandedDesc((p) => ({ ...p, [e.id]: !p[e.id] }));
-                                }}
-                                style={{
-                                  border: "none",
-                                  background: "transparent",
-                                  color: "inherit",
-                                  textDecoration: "underline",
-                                  cursor: "pointer",
-                                  fontWeight: 900,
-                                  opacity: 0.9,
-                                  padding: 0,
-                                }}
-                              >
-                                {isDescExpanded ? "Weniger" : "Mehr anzeigen"}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      <div style={{ marginTop: 14 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Notizen</div>
-                        <textarea
-                          defaultValue={e.notes ?? ""}
-                          placeholder="Eigene Gedanken, Zitate, warum du’s lesen willst…"
-                          rows={3}
-                          style={{
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.18)",
-                            background: "transparent",
-                            color: "inherit",
-                            resize: "vertical",
-                          }}
-                          onBlur={(ev) => {
-                            const next = ev.currentTarget.value;
-                            if ((e.notes ?? "") === next) return;
-                            void updateEntry(e.id, { notes: next });
-                          }}
-                        />
-                        <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Speichert beim Verlassen des Feldes.</div>
-                      </div>
-
-                      <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.preventDefault();
-                            ev.stopPropagation();
-                            void deleteEntry(e.id, e.title);
-                          }}
-                          style={{
-                            padding: "6px 10px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.14)",
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontWeight: 900,
-                            opacity: 0.75,
-                            fontSize: 12,
-                          }}
-                          title="Eintrag löschen"
-                        >
-                          Löschen
-                        </button>
-                      </div>
-                    </div>
-                  )}
+            <>
+              {recommendedEntries.length > 0 && (
+                <div className="section">
+                  <div className="section-title">
+                    <span>Empfohlen und noch ungelesen</span>
+                    <span className="section-meta">{recommendedEntries.length} Bücher</span>
+                  </div>
+                  <div className="books-grid">
+                    {recommendedEntries.map((entry) => renderEntryCard(entry, { highlight: true }))}
+                  </div>
                 </div>
-              );
-            })
+              )}
+
+              {groupedShelves.map(([genre, items]) => (
+                <div key={genre} className="section">
+                  <div className="section-title">
+                    <span>{genre}</span>
+                    <span className="section-meta">{items.length} Bücher</span>
+                  </div>
+                  <div className="books-grid">{items.map((entry) => renderEntryCard(entry))}</div>
+                </div>
+              ))}
+            </>
           )}
         </div>
 
-        <div style={{ marginTop: 18, fontSize: 12, opacity: 0.75 }}>
+        <div className="footer-links">
           Empfehlungen:{" "}
           <a href="/recommendations" style={{ textDecoration: "underline" }}>
             /recommendations

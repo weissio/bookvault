@@ -32,6 +32,45 @@ async function requireUserId(req: NextApiRequest) {
   return session.userId;
 }
 
+
+function norm(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[’'"] /g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function pickPrimaryAuthor(authors: string) {
+  return (authors || "").split(",")[0]?.trim() || "";
+}
+
+function titleTokenKey(title: string) {
+  const stop = new Set([
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
+    "der", "die", "das", "ein", "eine", "und", "oder", "von", "zu", "mit", "im", "am",
+    "le", "la", "les", "de", "des", "du", "et", "un", "une",
+    "el", "los", "las", "del", "y", "un", "una",
+  ]);
+
+  return norm(title)
+    .split(" ")
+    .filter(Boolean)
+    .filter((t) => !stop.has(t))
+    .slice(0, 10)
+    .join(" ");
+}
+
+function fallbackKey(title: string, authors: string, isbn: string) {
+  const ak = norm(pickPrimaryAuthor(authors));
+  const tk = titleTokenKey(title);
+  if (ak && tk) return `na:${ak}|${tk}`;
+  if (isbn) return `isbn:${isbn}`;
+  return `manual:${Date.now()}`;
+}
+
 function isValidStatus(s: string) {
   return s === "unread" || s === "reading" || s === "paused" || s === "read";
 }
@@ -119,10 +158,53 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
       return res.status(200).json({ ok: true, entry });
     }
 
-    const entry = await prisma.libraryEntry.update({
-      where: { id },
-      data,
-    });
+    try {
+      const becameRead = data.status === "read";
+      const hasRating = typeof data.rating === "number" && data.rating >= 1;
+      if (becameRead && hasRating) {
+        const full = await prisma.libraryEntry.findUnique({
+          where: { id },
+          select: { isbn: true, title: true, authors: true },
+        });
+        if (full) {
+          const keyCandidates = [
+            `isbn:${String(full.isbn || "").trim()}`,
+            fallbackKey(String(full.title || ""), String(full.authors || ""), String(full.isbn || "")),
+          ].filter((x) => x && !x.endsWith(":"));
+
+          const saved = await prisma.recommendationEvent.findFirst({
+            where: {
+              userId,
+              event: "saved_from_recommendation",
+              workKey: { in: keyCandidates },
+            },
+            orderBy: { createdAt: "desc" },
+          });
+
+          if (saved) {
+            const exists = await prisma.recommendationEvent.findFirst({
+              where: {
+                userId,
+                event: "finished_from_recommendation",
+                workKey: saved.workKey,
+              },
+            });
+            if (!exists) {
+              await prisma.recommendationEvent.create({
+                data: {
+                  userId,
+                  workKey: saved.workKey,
+                  event: "finished_from_recommendation",
+                  valueJson: { rating: data.rating },
+                },
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
 
     return res.status(200).json({ ok: true, entry });
   } catch (e: any) {

@@ -34,6 +34,45 @@ async function requireUserId(req: NextApiRequest) {
   return session.userId;
 }
 
+
+function norm(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[’'"] /g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function pickPrimaryAuthor(authors: string) {
+  return (authors || "").split(",")[0]?.trim() || "";
+}
+
+function titleTokenKey(title: string) {
+  const stop = new Set([
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
+    "der", "die", "das", "ein", "eine", "und", "oder", "von", "zu", "mit", "im", "am",
+    "le", "la", "les", "de", "des", "du", "et", "un", "une",
+    "el", "los", "las", "del", "y", "un", "una",
+  ]);
+
+  return norm(title)
+    .split(" ")
+    .filter(Boolean)
+    .filter((t) => !stop.has(t))
+    .slice(0, 10)
+    .join(" ");
+}
+
+function fallbackKey(title: string, authors: string, isbn: string) {
+  const ak = norm(pickPrimaryAuthor(authors));
+  const tk = titleTokenKey(title);
+  if (ak && tk) return `na:${ak}|${tk}`;
+  if (isbn) return `isbn:${isbn}`;
+  return `manual:${Date.now()}`;
+}
+
 function normalizeDescription(desc: any): string | null {
   if (!desc) return null;
   if (typeof desc === "string") return desc.trim() || null;
@@ -128,6 +167,9 @@ export default async function handler(
       status = "unread",
       rating = null,
       notes = null,
+      source = null,
+      recId = null,
+      workKey = null,
     } = req.body ?? {};
 
     if (!isbn || !title || !authors) {
@@ -193,6 +235,23 @@ export default async function handler(
             description: descToWrite,
           },
         });
+
+    if (String(source) === "recommendation") {
+      try {
+        const wk = workKey && String(workKey).trim() ? String(workKey).trim() : "";
+        const key = wk ? (wk.startsWith("/") ? `ol:${wk}` : wk) : fallbackKey(titleStr, authorsStr, isbnStr);
+        await prisma.recommendationEvent.create({
+          data: {
+            userId,
+            workKey: key,
+            event: "saved_from_recommendation",
+            valueJson: { recId, isbn: isbnStr, title: titleStr, authors: authorsStr },
+          },
+        });
+      } catch {
+        // ignore
+      }
+    }
 
     return res.status(200).json({ ok: true, entry });
   } catch (e: any) {
