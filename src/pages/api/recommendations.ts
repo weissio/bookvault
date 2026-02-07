@@ -1685,6 +1685,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     debug.poolCount = pool.length;
+    out.sort((a, b) => b.score - a.score);
+
     const missingDescIdx: number[] = [];
     for (let i = 0; i < out.length; i++) {
       if (!out[i].description && out[i].workKey) missingDescIdx.push(i);
