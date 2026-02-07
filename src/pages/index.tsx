@@ -16,6 +16,7 @@ type SearchItem = {
 type SearchResponse = { ok: true; results: SearchItem[] } | { ok: false; error: string };
 
 type AddResponse = { ok: true; entry: any } | { ok: false; error: string };
+type BlockResponse = { ok: true; id: number } | { ok: false; error: string };
 
 type AuthResponse =
   | { ok: true; user: { id: number; email: string } }
@@ -42,6 +43,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchItem[]>([]);
   const [expandedSearchDesc, setExpandedSearchDesc] = useState<Record<string, boolean>>({});
+  const [blockLoading, setBlockLoading] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState<string | null>(null);
 
   // bulk add
@@ -189,6 +191,41 @@ export default function HomePage() {
       pushToast("success", `Gespeichert ✓  ${item.title}`);
     } catch (e: any) {
       pushToast("error", e?.message ?? "Speichern fehlgeschlagen.");
+    }
+  }
+
+
+  async function blockItem(item: SearchItem) {
+    if (!user) {
+      pushToast("info", "Bitte einloggen, um Bücher auszublenden.");
+      return;
+    }
+
+    const key = item.isbn || `${item.title}-${item.authors}`;
+    setBlockLoading((p) => ({ ...p, [key]: true }));
+    try {
+      const r = await fetch("/api/blocklist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          isbn: item.isbn || "",
+          title: item.title,
+          authors: item.authors,
+        }),
+      });
+
+      const j = (await r.json()) as BlockResponse;
+      if (!j.ok) {
+        pushToast("error", j.error || "Ausblenden fehlgeschlagen.");
+        return;
+      }
+
+      setResults((prev) => prev.filter((x) => (x.isbn || `${x.title}-${x.authors}`) !== key));
+      pushToast("success", `Ausgeblendet ✓  ${item.title}`);
+    } catch (e: any) {
+      pushToast("error", e?.message ?? "Ausblenden fehlgeschlagen.");
+    } finally {
+      setBlockLoading((p) => ({ ...p, [key]: false }));
     }
   }
 
