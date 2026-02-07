@@ -611,6 +611,7 @@ async function resolveCanonicalKey(workKey: string | null, title: string, author
 type PreferenceSignals = {
   likedKeys: Set<string>;
   dislikedKeys: Set<string>;
+  blockedKeys: Set<string>;
 };
 
 async function loadPreferenceSignals(userId: number): Promise<PreferenceSignals> {
@@ -618,7 +619,7 @@ async function loadPreferenceSignals(userId: number): Promise<PreferenceSignals>
     const rows = await prisma.recommendationEvent.findMany({
       where: {
         userId,
-        event: { in: ["pref_like", "pref_dislike"] },
+        event: { in: ["pref_like", "pref_dislike", "blocked"] },
       },
       orderBy: { createdAt: "desc" },
       take: 1000,
@@ -630,6 +631,7 @@ async function loadPreferenceSignals(userId: number): Promise<PreferenceSignals>
 
     const likedKeys = new Set<string>();
     const dislikedKeys = new Set<string>();
+    const blockedKeys = new Set<string>();
     const seen = new Set<string>();
 
     for (const r of rows) {
@@ -639,13 +641,14 @@ async function loadPreferenceSignals(userId: number): Promise<PreferenceSignals>
 
       if (r.event === "pref_like") likedKeys.add(key);
       if (r.event === "pref_dislike") dislikedKeys.add(key);
+      if (r.event === "blocked") blockedKeys.add(key);
     }
 
-    return { likedKeys, dislikedKeys };
+    return { likedKeys, dislikedKeys, blockedKeys };
   } catch (e: any) {
     // Graceful fallback for environments where RecommendationEvent table is not migrated yet.
     if (e?.code === "P2021") {
-      return { likedKeys: new Set<string>(), dislikedKeys: new Set<string>() };
+      return { likedKeys: new Set<string>(), dislikedKeys: new Set<string>(), blockedKeys: new Set<string>() };
     }
     throw e;
   }
@@ -1565,6 +1568,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         r.isbn
       );
 
+      if (preferenceKeys.some((k) => preferenceSignals.blockedKeys.has(k))) {
+        droppedByPreferenceDislike++;
+        continue;
+      }
+
       if (preferenceKeys.some((k) => preferenceSignals.dislikedKeys.has(k))) {
         droppedByPreferenceDislike++;
         continue;
@@ -1727,6 +1735,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.ownedCanonicalResolvedCount = ownedCanonicalResolved.size;
     debug.preferenceLikedCount = preferenceSignals.likedKeys.size;
     debug.preferenceDislikedCount = preferenceSignals.dislikedKeys.size;
+    debug.preferenceBlockedCount = preferenceSignals.blockedKeys.size;
     debug.droppedByPreferenceDislike = droppedByPreferenceDislike;
     debug.boostedByPreferenceLike = boostedByPreferenceLike;
     debug.totalMs = Date.now() - startedAt;

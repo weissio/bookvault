@@ -40,6 +40,10 @@ type FeedbackResponse =
   | { ok: true; key: string; action: "like" | "dislike" }
   | { ok: false; error: string };
 
+type BlockResponse =
+  | { ok: true; id: number }
+  | { ok: false; error: string };
+
 type LibrarySeedEntry = {
   id: number;
   title: string;
@@ -84,6 +88,7 @@ export default function RecommendationsPage() {
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [preference, setPreference] = useState<Record<string, "like" | "dislike">>({});
   const [prefLoading, setPrefLoading] = useState<Record<string, boolean>>({});
+  const [blockLoading, setBlockLoading] = useState<Record<string, boolean>>({});
   const [expandedRecDesc, setExpandedRecDesc] = useState<Record<string, boolean>>({});
 
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -252,6 +257,48 @@ export default function RecommendationsPage() {
     }
   }
 
+
+  async function blockItem(item: RecItem) {
+    if (!user) {
+      pushToast("info", "Bitte einloggen, um Bücher auszublenden.");
+      return;
+    }
+
+    setBlockLoading((p) => ({ ...p, [item.recId]: true }));
+    try {
+      const r = await fetch("/api/blocklist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workKey: item.workKey,
+          isbn: item.isbn,
+          title: item.title,
+          authors: item.authors,
+        }),
+      });
+
+      const j = (await r.json()) as BlockResponse;
+      if (!j.ok) {
+        pushToast("error", j.error || "Ausblenden fehlgeschlagen.");
+        return;
+      }
+
+      // remove from UI immediately
+      setData((prev) => {
+        if (!prev || !(prev as any).ok) return prev;
+        const next = { ...(prev as any) };
+        next.recommendations = next.recommendations.filter((x: RecItem) => x.recId !== item.recId);
+        return next;
+      });
+
+      pushToast("success", `Ausgeblendet ✓  ${item.title}`);
+    } catch (e: any) {
+      pushToast("error", e?.message ?? "Ausblenden fehlgeschlagen.");
+    } finally {
+      setBlockLoading((p) => ({ ...p, [item.recId]: false }));
+    }
+  }
+
   if (me && (me as any).ok && !user) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
@@ -319,8 +366,8 @@ export default function RecommendationsPage() {
           </div>
           <div style={{ textAlign: "right" }}>
             <a href="/library" style={{ textDecoration: "underline" }}>
-              → Deine Bibliothek
-            </a>
+              → Deine Bibliothek</a>
+            <div style={{ marginTop: 6 }}><a href="/blocklist" style={{ textDecoration: "underline", fontSize: 12, opacity: 0.8 }}>Sperrliste verwalten</a></div>
             <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{user ? user.email : ""}</div>
           </div>
         </div>
