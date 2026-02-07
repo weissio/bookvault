@@ -655,6 +655,15 @@ export default function RecommendationsPage() {
                 ))
               : null}
           </div>
+
+          <div className="panel" style={{ marginTop: 18 }}>
+            <div className="panel-title">Transparenz</div>
+            <div style={{ marginTop: 6 }} className="muted">
+              Empfehlungen werden ausschließlich aus <b>deiner</b> Bibliothek, deinen Bewertungen und deinen Feedbacks
+              abgeleitet. Es gibt keine externen Verknüpfungen oder Fremddaten. Je mehr Bücher du bewertest (vor allem
+              aus Empfehlungen), desto präziser wird dein persönliches Profil.
+            </div>
+          </div>
         </div>
       </div>
     </div>
