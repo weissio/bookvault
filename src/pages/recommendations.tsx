@@ -28,6 +28,7 @@ type RecResponse =
         topAuthors: { author: string; weight: number }[];
       };
       recommendations: RecItem[];
+      meta?: { frozen?: boolean; hasCache?: boolean };
       debug?: any;
     }
   | { ok: false; error: string };
@@ -678,7 +679,7 @@ export default function RecommendationsPage() {
 
         {data && (data as any).ok && (data as any).recommendations.length === 0 && !loading && (
           <div style={{ marginTop: 10, opacity: 0.8 }}>
-            Noch keine Empfehlungen. Tipp: Markiere gelesene Bücher und gib Bewertungen (z.B. 7–10), damit das Profil stärker wird.
+            {(data as any).meta?.frozen ? "Noch keine Berechnung vorhanden. Klicke auf Neu berechnen, um Empfehlungen zu erzeugen." : "Noch keine Empfehlungen. Tipp: Markiere gelesene Bücher und gib Bewertungen (z.B. 7–10), damit das Profil stärker wird."}
           </div>
         )}
 

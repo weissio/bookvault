@@ -1362,6 +1362,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.storyMotifsCount = storyProfile.topMotifs.length;
     debug.typeShares = typeDistribution.shares;
 
+    if (!force) {
+      debug.totalMs = Date.now() - startedAt;
+      return jsonOk(res, {
+        user,
+        profile,
+        recommendations: [],
+        meta: { frozen: true, hasCache: false },
+        debug: debugMode ? debug : undefined,
+      });
+    }
+
     if (profile.likedCount === 0) {
       debug.totalMs = Date.now() - startedAt;
       return jsonOk(res, {
