@@ -25,10 +25,6 @@ type ListResponse = { ok: true; entries: Entry[] } | { ok: false; error: string 
 type UpdateResponse = { ok: true; entry: Entry } | { ok: false; error: string };
 type DeleteResponse = { ok: true; deletedId: number } | { ok: false; error: string };
 
-type ImportResponse =
-  | { ok: true; imported: number; updated: number; skipped: number; totalInFile: number }
-  | { ok: false; error: string };
-
 type Toast = { id: string; text: string; kind: "success" | "error" | "info" };
 
 function nowId() {
@@ -112,9 +108,6 @@ export default function LibraryPage() {
   // Filters
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterRating, setFilterRating] = useState<string>("all");
-
-  // Import
-  const fileRef = useRef<HTMLInputElement | null>(null);
 
   // Toasts
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -241,49 +234,6 @@ export default function LibraryPage() {
       pushToast("success", `Gelöscht ✓`);
     } catch (e: any) {
       pushToast("error", e?.message ?? "Löschen fehlgeschlagen.");
-    }
-  }
-
-  async function exportJson() {
-    try {
-      const r = await fetch("/api/library/export");
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `bookvault_export_${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      pushToast("success", "Export gestartet ✓");
-    } catch (e: any) {
-      pushToast("error", e?.message ?? "Export fehlgeschlagen.");
-    }
-  }
-
-  async function importJsonFile(file: File) {
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      const payload = { entries: parsed.entries ?? parsed };
-
-      const r = await fetch("/api/library/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const j = (await r.json()) as ImportResponse;
-
-      if (!j.ok) {
-        pushToast("error", j.error || "Import fehlgeschlagen.");
-        return;
-      }
-
-      pushToast("success", `Import ✓  Neu: ${j.imported}, aktualisiert: ${j.updated}`);
-      await loadEntries();
-    } catch (e: any) {
-      pushToast("error", e?.message ?? "Import fehlgeschlagen.");
     }
   }
 
@@ -750,26 +700,6 @@ export default function LibraryPage() {
             </div>
 
             <div className="toolbar-group">
-              <button type="button" onClick={() => void exportJson()} className="btn btn-soft">
-                Export (JSON)
-              </button>
-
-              <input
-                ref={fileRef}
-                type="file"
-                accept="application/json"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void importJsonFile(f);
-                  e.currentTarget.value = "";
-                }}
-              />
-
-              <button type="button" onClick={() => fileRef.current?.click()} className="btn">
-                Import (JSON)
-              </button>
-
               <button type="button" onClick={() => void loadEntries()} className="btn btn-ghost" title="Neu laden">
                 Refresh
               </button>
