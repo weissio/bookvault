@@ -5,9 +5,11 @@ type Result = {
   title: string;
   authors: string;
   coverUrl?: string;
+  description?: string;
 };
 
 const UA = { "User-Agent": "bookvault-dev/0.1 (local development)" };
+const GOOGLE_BOOKS_API_KEY = String(process.env.GOOGLE_BOOKS_API_KEY || "").trim();
 
 function looksLikeIsbn(input: string) {
   return /^[0-9Xx-]{10,17}$/.test(input);
@@ -25,6 +27,55 @@ async function fetchJson(url: string) {
   } catch {
     return null;
   }
+}
+
+async function fetchGoogleBooks(query: string, limit: number): Promise<Result[]> {
+  if (!GOOGLE_BOOKS_API_KEY) return [];
+
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("printType", "books");
+  params.set("maxResults", String(Math.min(40, Math.max(1, limit))));
+  params.set("key", GOOGLE_BOOKS_API_KEY);
+
+  const url = `https://www.googleapis.com/books/v1/volumes?${params.toString()}`;
+  const j = await fetchJson(url);
+  const items = Array.isArray(j?.items) ? j.items : [];
+
+  const out: Result[] = [];
+  for (const it of items) {
+    const vi = it?.volumeInfo || {};
+    const title = String(vi?.title || "").trim();
+    if (!title) continue;
+
+    const authors = Array.isArray(vi?.authors) ? vi.authors.map((x: any) => String(x).trim()).filter(Boolean) : [];
+    const identifiers = Array.isArray(vi?.industryIdentifiers) ? vi.industryIdentifiers : [];
+    let isbn = "";
+    for (const id of identifiers) {
+      const type = String(id?.type || "").toUpperCase();
+      const val = String(id?.identifier || "").trim();
+      if (!val) continue;
+      if (type === "ISBN_13") {
+        isbn = val;
+        break;
+      }
+      if (!isbn && type === "ISBN_10") isbn = val;
+    }
+    if (!isbn) continue;
+
+    const cover = vi?.imageLinks?.thumbnail || vi?.imageLinks?.smallThumbnail || undefined;
+    const desc = typeof vi?.description === "string" ? vi.description.trim() : undefined;
+
+    out.push({
+      isbn,
+      title,
+      authors: authors.length ? authors.join(", ") : "Unbekannt",
+      coverUrl: cover,
+      description: desc,
+    });
+  }
+
+  return out;
 }
 
 function pickIsbnFromEditionJson(editionJson: any): string | null {
@@ -63,7 +114,7 @@ async function fetchEditionIsbnByWorkKey(workKey: string): Promise<string | null
 
 /**
  * Heuristik: wenn Query wie ein Personenname aussieht,
- * versuchen wir zusätzlich eine autor-fokussierte Suche.
+ * versuchen wir zusaetzlich eine autor-fokussierte Suche.
  * (Keine Magie, nur ein Extra-Recall.)
  */
 function looksLikePersonName(q: string) {
@@ -87,6 +138,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // ─────────────────────────────────────────────
   if (looksLikeIsbn(q)) {
     const isbn = normalizeIsbn(q);
+
+    const gb = await fetchGoogleBooks(`isbn:${isbn}`, 3);
+    if (gb.length) {
+      return res.status(200).json({ ok: true, results: gb.slice(0, 1) });
+    }
 
     const j = await fetchJson(`https://openlibrary.org/isbn/${isbn}.json`);
     if (!j) return res.status(404).json({ ok: false, error: "Nicht gefunden" });
@@ -118,31 +174,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   // ─────────────────────────────────────────────
-  // 2) Text → breiter suchen, mehr Treffer prüfen
+  // 2) Text → Google Books zuerst, OpenLibrary als Fallback
   // ─────────────────────────────────────────────
+  const TARGET = 20;
+  const results: Result[] = [];
+  const seenIsbn = new Set<string>();
+
+  // Google Books zuerst
+  const gbResults = await fetchGoogleBooks(q, TARGET);
+  for (const r of gbResults) {
+    if (results.length >= TARGET) break;
+    const isbn = normalizeIsbn(r.isbn);
+    if (seenIsbn.has(isbn)) continue;
+    seenIsbn.add(isbn);
+    results.push({ ...r, isbn });
+  }
+
+  // OpenLibrary als Fallback/Ergaenzung
   const urls: string[] = [];
-
-  // Allgemeine Suche (Titel/Autor/Stichworte)
   urls.push(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=100`);
-
-  // Zusatz: wenn es wie ein Name wirkt, extra autor= Suche
   if (looksLikePersonName(q)) {
     urls.push(`https://openlibrary.org/search.json?author=${encodeURIComponent(q)}&limit=100`);
   }
 
-  // Docs sammeln (merge)
   const docsMerged: any[] = [];
   for (const url of urls) {
     const docs = await runSearchDocs(url);
     docsMerged.push(...docs);
   }
-
-  const results: Result[] = [];
-  const seenIsbn = new Set<string>();
-
-  // Wir versuchen bis zu 20 Ergebnisse zu liefern (statt 5),
-  // damit einzelne Titel seltener “fehlen”.
-  const TARGET = 20;
 
   for (const d of docsMerged) {
     if (results.length >= TARGET) break;
@@ -166,15 +225,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (!isbn) continue;
 
-    // Deduplizieren
-    if (seenIsbn.has(isbn)) continue;
-    seenIsbn.add(isbn);
+    const normIsbn = normalizeIsbn(isbn);
+    if (seenIsbn.has(normIsbn)) continue;
+    seenIsbn.add(normIsbn);
 
     results.push({
-      isbn,
+      isbn: normIsbn,
       title,
       authors,
-      coverUrl: `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`,
+      coverUrl: `https://covers.openlibrary.org/b/isbn/${normIsbn}-M.jpg`,
     });
   }
 
