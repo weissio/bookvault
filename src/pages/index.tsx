@@ -41,6 +41,7 @@ export default function HomePage() {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchItem[]>([]);
+  const [expandedSearchDesc, setExpandedSearchDesc] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState<string | null>(null);
 
   // bulk add
@@ -518,7 +519,38 @@ export default function HomePage() {
                   <div style={{ opacity: 0.85 }}>{r.authors}</div>
                   {r.description ? (
                     <div style={{ opacity: 0.7, fontSize: 12, marginTop: 4 }}>
-                      {r.description.slice(0, 180)}{r.description.length > 180 ? "…" : ""}
+                      {(() => {
+                        const key = r.isbn || `${r.title}-${r.authors}`;
+                        const isOpen = !!expandedSearchDesc[key];
+                        const short = r.description.slice(0, 220);
+                        const show = isOpen ? r.description : short;
+                        return (
+                          <>
+                            {show}{!isOpen && r.description.length > 220 ? "…" : ""}
+                            {r.description.length > 220 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedSearchDesc((p) => ({ ...p, [key]: !p[key] }))
+                                }
+                                style={{
+                                  border: "none",
+                                  background: "transparent",
+                                  color: "inherit",
+                                  textDecoration: "underline",
+                                  cursor: "pointer",
+                                  fontWeight: 900,
+                                  opacity: 0.9,
+                                  padding: 0,
+                                  marginLeft: 6,
+                                }}
+                              >
+                                {isOpen ? "Weniger" : "Mehr"}
+                              </button>
+                            ) : null}
+                          </>
+                        );
+                      })()}
                     </div>
                   ) : null}
                   <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {r.isbn ? r.isbn : "—"}</div>

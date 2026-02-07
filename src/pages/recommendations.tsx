@@ -84,6 +84,7 @@ export default function RecommendationsPage() {
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [preference, setPreference] = useState<Record<string, "like" | "dislike">>({});
   const [prefLoading, setPrefLoading] = useState<Record<string, boolean>>({});
+  const [expandedRecDesc, setExpandedRecDesc] = useState<Record<string, boolean>>({});
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastTimer = useRef<Record<string, any>>({});
@@ -672,7 +673,34 @@ export default function RecommendationsPage() {
 
                     <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
                       <span style={{ fontWeight: 800 }}>Inhalt:</span>{" "}
-                      {x.description ? truncate(x.description, 520) : <span style={{ opacity: 0.7 }}>nicht verfügbar</span>}
+                      {x.description ? (
+                        <>
+                          {expandedRecDesc[x.recId] ? x.description : truncate(x.description, 260)}
+                          {x.description.length > 260 ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedRecDesc((p) => ({ ...p, [x.recId]: !p[x.recId] }))
+                              }
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                color: "inherit",
+                                textDecoration: "underline",
+                                cursor: "pointer",
+                                fontWeight: 900,
+                                opacity: 0.9,
+                                padding: 0,
+                                marginLeft: 6,
+                              }}
+                            >
+                              {expandedRecDesc[x.recId] ? "Weniger" : "Mehr"}
+                            </button>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span style={{ opacity: 0.7 }}>nicht verfügbar</span>
+                      )}
                     </div>
 
                     <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
