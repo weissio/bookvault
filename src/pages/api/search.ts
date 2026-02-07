@@ -18,6 +18,20 @@ function looksLikeIsbn(input: string) {
 function normalizeIsbn(input: string) {
   return input.replace(/[^0-9Xx]/g, "").toUpperCase();
 }
+function isbn13To10(isbn13: string): string | null {
+  const n = isbn13.replace(/[^0-9]/g, "");
+  if (n.length !== 13) return null;
+  if (!n.startsWith("978") && !n.startsWith("979")) return null;
+  const core = n.slice(3, 12);
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    sum += (i + 1) * Number(core[i]);
+  }
+  const mod = sum % 11;
+  const check = mod === 10 ? "X" : String(mod);
+  return core + check;
+}
+
 
 async function fetchJson(url: string) {
   const r = await fetch(url, { headers: UA });
@@ -139,9 +153,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (looksLikeIsbn(q)) {
     const isbn = normalizeIsbn(q);
 
-    const gb = await fetchGoogleBooks(`isbn:${isbn}`, 3);
-    if (gb.length) {
-      return res.status(200).json({ ok: true, results: gb.slice(0, 1) });
+    const gbPrimary = await fetchGoogleBooks(`isbn:${isbn}`, 3);
+    if (gbPrimary.length) {
+      return res.status(200).json({ ok: true, results: gbPrimary.slice(0, 1) });
+    }
+
+    const isbn10 = isbn13To10(isbn);
+    if (isbn10) {
+      const gb10 = await fetchGoogleBooks(`isbn:${isbn10}`, 3);
+      if (gb10.length) {
+        return res.status(200).json({ ok: true, results: gb10.slice(0, 1) });
+      }
+    }
+
+    const gbLoose = await fetchGoogleBooks(isbn, 3);
+    if (gbLoose.length) {
+      return res.status(200).json({ ok: true, results: gbLoose.slice(0, 1) });
     }
 
     const j = await fetchJson(`https://openlibrary.org/isbn/${isbn}.json`);
