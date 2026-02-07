@@ -305,17 +305,21 @@ export default function RecommendationsPage() {
 
   if (me && (me as any).ok && !user) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-        <div style={{ width: "100%", maxWidth: 980 }}>
-          <h1 style={{ fontSize: 28, marginBottom: 6 }}>Empfehlungen</h1>
-          <p style={{ opacity: 0.85, marginTop: 0 }}>
-            Dafür brauchst du einen Account, weil Empfehlungen aus <b>deiner</b> Bibliothek abgeleitet werden.
-          </p>
-          <div style={{ marginTop: 16 }}>
-            <a href="/" style={{ textDecoration: "underline" }}>
-              ← Zur Startseite (Login)
-            </a>
-          </div>
+      <div className="app-shell">
+        <div className="page">
+          <header className="page-header">
+            <div>
+              <h1 className="page-title">Empfehlungen</h1>
+              <p className="page-subtitle">
+                Dafür brauchst du einen Account, weil Empfehlungen aus deiner Bibliothek abgeleitet werden.
+              </p>
+            </div>
+            <div className="nav-links">
+              <a className="nav-pill" href="/">
+                Startseite
+              </a>
+            </div>
+          </header>
         </div>
       </div>
     );
@@ -324,223 +328,127 @@ export default function RecommendationsPage() {
   const okData = data && (data as any).ok ? (data as any) : null;
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-      {/* Toasts */}
-      <div
-        style={{
-          position: "fixed",
-          top: 14,
-          right: 14,
-          zIndex: 9999,
-          display: "grid",
-          gap: 8,
-          width: 360,
-          maxWidth: "92vw",
-        }}
-      >
+    <div className="app-shell">
+      <div className="toast-stack">
         {toasts.map((t) => (
-          <div
-            key={t.id}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.16)",
-              background: "rgba(0,0,0,0.55)",
-              backdropFilter: "blur(6px)",
-              boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
-              fontWeight: 800,
-              opacity: 0.98,
-            }}
-          >
-            <span style={{ opacity: 0.85 }}>
-              {t.kind === "success" ? "✅ " : t.kind === "error" ? "⚠️ " : "ℹ️ "}
-            </span>
+          <div key={t.id} className="toast">
+            <span style={{ opacity: 0.85 }}>{t.kind === "success" ? "✅ " : t.kind === "error" ? "⚠️ " : "ℹ️ "}</span>
             {t.text}
           </div>
         ))}
       </div>
 
-      <div style={{ width: "100%", maxWidth: 1050 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
+      <div className="page">
+        <header className="page-header">
           <div>
-            <h1 style={{ fontSize: 28, marginBottom: 6 }}>Empfehlungen</h1>
-            <p style={{ marginTop: 0, opacity: 0.85 }}>
-              Transparent: Jede Empfehlung zeigt dir <b>Warum</b> sie vorgeschlagen wird.
-            </p>
+            <h1 className="page-title">Empfehlungen</h1>
+            <p className="page-subtitle">Jede Empfehlung zeigt dir transparent, warum sie passt.</p>
           </div>
           <div style={{ textAlign: "right" }}>
-            <a href="/library" style={{ textDecoration: "underline" }}>
-              → Deine Bibliothek</a>
-            <div style={{ marginTop: 6 }}><a href="/blocklist" style={{ textDecoration: "underline", fontSize: 12, opacity: 0.8 }}>Sperrliste verwalten</a></div>
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{user ? user.email : ""}</div>
+            <div className="nav-links">
+              <a className="nav-pill primary" href="/library">
+                Bibliothek
+              </a>
+              <a className="nav-pill" href="/blocklist">
+                Sperrliste
+              </a>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12 }} className="muted">
+              {user ? user.email : ""}
+            </div>
           </div>
-        </div>
+        </header>
 
-        {msg && <div style={{ marginTop: 10, opacity: 0.9 }}>{msg}</div>}
+        {msg && (
+          <div className="panel">
+            <div className="muted">{msg}</div>
+          </div>
+        )}
 
-        {/* Controls */}
-        <div
-          style={{
-            marginTop: 16,
-            padding: 12,
-            borderRadius: 12,
-            border: "1px solid rgba(255,255,255,0.12)",
-            display: "grid",
-            gap: 10,
-          }}
-        >
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontWeight: 900 }}>Basis</label>
-              <select
-                value={seedMode}
-                onChange={(e) => setSeedMode(e.target.value as any)}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  color: "inherit",
-                  minWidth: 260,
-                }}
-              >
-                <option value="liked">Gelesen & Bewertung ≥ min</option>
-                <option value="allRead">Alle gelesenen (auch ohne Bewertung)</option>
-              </select>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontWeight: 900 }}>min. Bewertung</label>
-              <select
-                value={String(minRating)}
-                onChange={(e) => setMinRating(Number(e.target.value))}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  color: "inherit",
-                  minWidth: 160,
-                }}
-              >
-                <option value="3">3+</option>
-                <option value="4">4+</option>
-                <option value="5">5+</option>
-                <option value="7">7+</option>
-              </select>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontWeight: 900 }}>Anzahl</label>
-              <select
-                value={String(limit)}
-                onChange={(e) => setLimit(Number(e.target.value))}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  color: "inherit",
-                  minWidth: 160,
-                }}
-              >
-                <option value="15">15</option>
-                <option value="20">20</option>
-              </select>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontWeight: 900 }}>Sprache</label>
-              <select
-                value={deOnly ? "de_only" : "de_pref"}
-                onChange={(e) => setDeOnly(e.target.value === "de_only")}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  color: "inherit",
-                  minWidth: 220,
-                }}
-              >
-                <option value="de_pref">Deutsch priorisieren</option>
-                <option value="de_only">Nur deutsch (streng)</option>
-              </select>
-            </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <label style={{ fontWeight: 900 }}>Literaturtyp</label>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {[
-                  { id: "fiction", label: "Roman" },
-                  { id: "nonfiction", label: "Sachbuch" },
-                  { id: "selfhelp", label: "Ratgeber" },
-                  { id: "biography", label: "Biografie" },
-                  { id: "science", label: "Wissenschaft" },
-                ].map((t) => {
-                  const checked = typeFilters.includes(t.id);
-                  return (
-                    <label
-                      key={t.id}
-                      style={{
-                        display: "flex",
-                        gap: 6,
-                        alignItems: "center",
-                        padding: "6px 8px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.18)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          const on = e.target.checked;
-                          setTypeFilters((prev) => {
-                            if (on) return Array.from(new Set([...prev, t.id]));
-                            return prev.filter((x) => x !== t.id);
-                          });
-                        }}
-                      />
-                      <span>{t.label}</span>
-                    </label>
-                  );
-                })}
+        <div className="panel" style={{ marginTop: 18 }}>
+          <div className="toolbar">
+            <div className="toolbar-group">
+              <div className="filter-field">
+                <label>Basis</label>
+                <select value={seedMode} onChange={(e) => setSeedMode(e.target.value as any)}>
+                  <option value="liked">Gelesen & Bewertung ≥ min</option>
+                  <option value="allRead">Alle gelesenen (auch ohne Bewertung)</option>
+                </select>
               </div>
-              <div style={{ fontSize: 12, opacity: 0.72 }}>Leer lassen = automatische Verteilung nach deiner Bibliothek.</div>
+
+              <div className="filter-field">
+                <label>min. Bewertung</label>
+                <select value={String(minRating)} onChange={(e) => setMinRating(Number(e.target.value))}>
+                  <option value="3">3+</option>
+                  <option value="4">4+</option>
+                  <option value="5">5+</option>
+                  <option value="7">7+</option>
+                </select>
+              </div>
+
+              <div className="filter-field">
+                <label>Anzahl</label>
+                <select value={String(limit)} onChange={(e) => setLimit(Number(e.target.value))}>
+                  <option value="15">15</option>
+                  <option value="20">20</option>
+                </select>
+              </div>
+
+              <div className="filter-field">
+                <label>Sprache</label>
+                <select value={deOnly ? "de_only" : "de_pref"} onChange={(e) => setDeOnly(e.target.value === "de_only")}>
+                  <option value="de_pref">Deutsch priorisieren</option>
+                  <option value="de_only">Nur deutsch (streng)</option>
+                </select>
+              </div>
             </div>
 
-            <button
-              onClick={() => void load(true)}
-              style={{
-                marginLeft: "auto",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "transparent",
-                cursor: "pointer",
-                fontWeight: 900,
-              }}
-            >
-              Neu berechnen
-            </button>
+            <div className="toolbar-group">
+              <button onClick={() => void load(true)} className="btn btn-soft">
+                Neu berechnen
+              </button>
+            </div>
           </div>
 
-          <details
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.03)",
-            }}
-          >
-            <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.95 }}>
-              Wie entsteht der Score?
-              <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.7, fontWeight: 800 }}>(V1)</span>
-            </summary>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Literaturtyp</div>
+            <div className="chips">
+              {[
+                { id: "fiction", label: "Roman" },
+                { id: "nonfiction", label: "Sachbuch" },
+                { id: "selfhelp", label: "Ratgeber" },
+                { id: "biography", label: "Biografie" },
+                { id: "science", label: "Wissenschaft" },
+              ].map((t) => {
+                const checked = typeFilters.includes(t.id);
+                return (
+                  <label key={t.id} className="chip" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setTypeFilters((prev) => {
+                          if (on) return Array.from(new Set([...prev, t.id]));
+                          return prev.filter((x) => x !== t.id);
+                        });
+                      }}
+                    />
+                    <span>{t.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 12 }} className="muted">
+              Leer lassen = automatische Verteilung nach deiner Bibliothek.
+            </div>
+          </div>
 
-            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.92, lineHeight: 1.5 }}>
+          <details className="panel" style={{ marginTop: 12 }}>
+            <summary style={{ cursor: "pointer", fontWeight: 800 }}>
+              Wie entsteht der Score? <span className="muted">(V1)</span>
+            </summary>
+            <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.5 }} className="muted">
               <div style={{ marginBottom: 8 }}>
                 <code>Score = Story (60%) + Themen (28%) + Autor (12%)</code>
               </div>
@@ -553,99 +461,51 @@ export default function RecommendationsPage() {
             </div>
           </details>
 
-          <div style={{ fontSize: 12, opacity: 0.75 }}>
-            V1-Logik: Story + Subjects aus deiner Bibliothek → Kandidaten von OpenLibrary → Score + „Warum?“ + Inhaltsangabe.
+          <div style={{ fontSize: 12, marginTop: 10 }} className="muted">
+            V1-Logik: Story + Subjects aus deiner Bibliothek → Kandidaten → Score + „Warum?“ + Inhaltsangabe.
             {okData ? (
               <span style={{ marginLeft: 8 }}>
-                Seeds: <b>{okData.profile?.likedCount ?? 0}</b> • Top-Themen:{" "}
-                <b>{okData.profile?.topSubjects?.length ?? 0}</b> • Top-Autor:innen:{" "}
+                Seeds: <b>{okData.profile?.likedCount ?? 0}</b> • Top-Themen: <b>{okData.profile?.topSubjects?.length ?? 0}</b> • Top-Autor:innen:{" "}
                 <b>{okData.profile?.topAuthors?.length ?? 0}</b>
               </span>
             ) : null}
           </div>
 
-          <div style={{ fontSize: 12, opacity: 0.72 }}>(Sprache: {deOnly ? "Nur deutsch" : "Deutsch priorisiert"}) • Freeze bis "Neu berechnen"</div>
+          <div style={{ fontSize: 12, marginTop: 6 }} className="muted">
+            (Sprache: {deOnly ? "Nur deutsch" : "Deutsch priorisiert"}) • Freeze bis "Neu berechnen"
+          </div>
 
-          <details
-            style={{
-              padding: 10,
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.03)",
-            }}
-          >
-            <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.95 }}>
-              Seed-Buecher auswaehlen (optional)
-            </summary>
-
+          <details className="panel" style={{ marginTop: 12 }}>
+            <summary style={{ cursor: "pointer", fontWeight: 800 }}>Seed-Buecher auswaehlen (optional)</summary>
             <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-              <div style={{ fontSize: 13, opacity: 0.86 }}>
+              <div style={{ fontSize: 13 }} className="muted">
                 Ohne Auswahl nutzt das System automatisch alle passenden Buecher aus deiner Bibliothek.
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  onClick={() => setSelectedSeedIds(eligibleSeedIds)}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.18)",
-                    background: "transparent",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
+                <button onClick={() => setSelectedSeedIds(eligibleSeedIds)} className="btn btn-ghost">
                   Alle waehlen
                 </button>
-                <button
-                  onClick={() => setSelectedSeedIds([])}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.18)",
-                    background: "transparent",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                  }}
-                >
+                <button onClick={() => setSelectedSeedIds([])} className="btn btn-ghost">
                   Auswahl leeren
                 </button>
-                <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>
+                <div style={{ fontSize: 12, alignSelf: "center" }} className="muted">
                   Ausgewaehlt: <b>{selectedSeedIds.length}</b> / {eligibleSeedIds.length}
                 </div>
               </div>
 
               {seedLoading ? (
-                <div style={{ fontSize: 13, opacity: 0.75 }}>Lade Bibliothek...</div>
+                <div style={{ fontSize: 13 }} className="muted">
+                  Lade Bibliothek...
+                </div>
               ) : (
-                <div
-                  style={{
-                    maxHeight: 220,
-                    overflow: "auto",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.1)",
-                    padding: 8,
-                    display: "grid",
-                    gap: 6,
-                  }}
-                >
+                <div style={{ maxHeight: 220, overflow: "auto", borderRadius: 12, border: "1px solid var(--line)", padding: 10 }}>
                   {librarySeeds
                     .filter((x) => eligibleSeedIds.includes(x.id))
                     .map((entry) => {
                       const checked = selectedSeedIds.includes(entry.id);
                       return (
-                        <label
-                          key={entry.id}
-                          style={{
-                            display: "flex",
-                            gap: 8,
-                            alignItems: "flex-start",
-                            padding: 6,
-                            borderRadius: 8,
-                            background: checked ? "rgba(255,255,255,0.05)" : "transparent",
-                            cursor: "pointer",
-                          }}
-                        >
+                        <label key={entry.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: 6, borderRadius: 8 }}>
                           <input
                             type="checkbox"
                             checked={checked}
@@ -659,8 +519,8 @@ export default function RecommendationsPage() {
                           />
                           <div style={{ fontSize: 13 }}>
                             <div style={{ fontWeight: 800 }}>{entry.title}</div>
-                            <div style={{ opacity: 0.78 }}>{entry.authors}</div>
-                            <div style={{ opacity: 0.65, fontSize: 12 }}>
+                            <div className="muted">{entry.authors}</div>
+                            <div style={{ fontSize: 12 }} className="muted">
                               Bewertung: {typeof entry.rating === "number" ? `${entry.rating}/10` : "-"}
                             </div>
                           </div>
@@ -673,170 +533,128 @@ export default function RecommendationsPage() {
           </details>
         </div>
 
-        {/* Results */}
-        <div style={{ marginTop: 16, fontWeight: 900 }}>
-          Empfehlungen{" "}
-          {data && (data as any).ok ? <span style={{ opacity: 0.7 }}>({(data as any).recommendations.length})</span> : null}
-          {loading ? <span style={{ opacity: 0.7, marginLeft: 10 }}>(lädt…)</span> : null}
-        </div>
-
-        {data && (data as any).ok && (data as any).recommendations.length === 0 && !loading && (
-          <div style={{ marginTop: 10, opacity: 0.8 }}>
-            {(data as any).meta?.frozen ? "Noch keine Berechnung vorhanden. Klicke auf Neu berechnen, um Empfehlungen zu erzeugen." : "Noch keine Empfehlungen. Tipp: Markiere gelesene Bücher und gib Bewertungen (z.B. 7–10), damit das Profil stärker wird."}
+        <div className="section">
+          <div className="section-title">
+            <span>Empfehlungen</span>
+            <span className="section-meta">
+              {data && (data as any).ok ? `${(data as any).recommendations.length} Treffer` : "—"} {loading ? "• lädt…" : ""}
+            </span>
           </div>
-        )}
 
-        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-          {data && (data as any).ok
-            ? (data as any).recommendations.map((x: RecItem) => (
-                <div
-                  key={x.recId}
-                  style={{
-                    padding: 12,
-                    borderRadius: 12,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "flex-start",
-                  }}
-                >
-                  {x.coverUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={x.coverUrl} alt="" width={58} height={86} style={{ borderRadius: 10, objectFit: "cover" }} />
-                  ) : (
-                    <div
-                      style={{
-                        width: 58,
-                        height: 86,
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        opacity: 0.6,
-                      }}
-                    />
-                  )}
+          {data && (data as any).ok && (data as any).recommendations.length === 0 && !loading && (
+            <div className="muted">
+              {(data as any).meta?.frozen
+                ? "Noch keine Berechnung vorhanden. Klicke auf Neu berechnen, um Empfehlungen zu erzeugen."
+                : "Noch keine Empfehlungen. Tipp: Markiere gelesene Bücher und gib Bewertungen (z.B. 7–10), damit das Profil stärker wird."}
+            </div>
+          )}
 
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 900, fontSize: 16 }}>{x.title}</div>
-                    <div style={{ opacity: 0.85 }}>{x.authors}</div>
-                    <div style={{ opacity: 0.65, fontSize: 12 }}>
-                      ISBN: {x.isbn}
-                      
-                    </div>
-
-                    <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
-                      <span style={{ fontWeight: 800 }}>Inhalt:</span>{" "}
-                      {x.description ? (
-                        <>
-                          {expandedRecDesc[x.recId] ? x.description : truncate(x.description, 260)}
-                          {x.description.length > 260 ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpandedRecDesc((p) => ({ ...p, [x.recId]: !p[x.recId] }))
-                              }
-                              style={{
-                                border: "none",
-                                background: "transparent",
-                                color: "inherit",
-                                textDecoration: "underline",
-                                cursor: "pointer",
-                                fontWeight: 900,
-                                opacity: 0.9,
-                                padding: 0,
-                                marginLeft: 6,
-                              }}
-                            >
-                              {expandedRecDesc[x.recId] ? "Weniger" : "Mehr"}
-                            </button>
-                          ) : null}
-                        </>
+          <div className="books-grid">
+            {data && (data as any).ok
+              ? (data as any).recommendations.map((x: RecItem) => (
+                  <div key={x.recId} className="book-card">
+                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                      {x.coverUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={x.coverUrl} alt="" width={64} height={92} style={{ borderRadius: 12, objectFit: "cover", boxShadow: "0 6px 14px rgba(0,0,0,0.15)" }} />
                       ) : (
-                        <span style={{ opacity: 0.7 }}>nicht verfügbar</span>
+                        <div style={{ width: 64, height: 92, borderRadius: 12, border: "1px dashed var(--line)", opacity: 0.6 }} />
                       )}
-                    </div>
 
-                    <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                      <div style={{ fontWeight: 900, fontSize: 13 }}>Warum?</div>
-                      <ul style={{ margin: 0, paddingLeft: 18, opacity: 0.9 }}>
-                        {x.reasons.slice(0, 3).map((r, idx) => (
-                          <li key={idx} style={{ marginBottom: 4 }}>
-                            <span style={{ fontWeight: 800 }}>{r.label}:</span>{" "}
-                            <span style={{ opacity: 0.9 }}>{r.detail || ""}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 800, fontSize: 16 }}>{x.title}</div>
+                        <div className="muted">{x.authors}</div>
+                        <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {x.isbn}</div>
 
-                      {x.subjects?.length ? (
-                        <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
-                          Themen (Auszug): {truncate(x.subjects.slice(0, 6).join(", "), 140)}
+                        <div style={{ marginTop: 6, fontSize: 13, opacity: 0.88 }}>
+                          <span style={{ fontWeight: 800 }}>Inhalt:</span>{" "}
+                          {x.description ? (
+                            <>
+                              {expandedRecDesc[x.recId] ? x.description : truncate(x.description, 260)}
+                              {x.description.length > 260 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedRecDesc((p) => ({ ...p, [x.recId]: !p[x.recId] }))}
+                                  style={{
+                                    border: "none",
+                                    background: "transparent",
+                                    color: "inherit",
+                                    textDecoration: "underline",
+                                    cursor: "pointer",
+                                    fontWeight: 800,
+                                    opacity: 0.9,
+                                    padding: 0,
+                                    marginLeft: 6,
+                                  }}
+                                >
+                                  {expandedRecDesc[x.recId] ? "Weniger" : "Mehr"}
+                                </button>
+                              ) : null}
+                            </>
+                          ) : (
+                            <span style={{ opacity: 0.7 }}>nicht verfügbar</span>
+                          )}
                         </div>
-                      ) : null}
+
+                        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                          <div style={{ fontWeight: 800, fontSize: 13 }}>Warum?</div>
+                          <ul style={{ margin: 0, paddingLeft: 18, opacity: 0.9 }}>
+                            {x.reasons.slice(0, 3).map((r, idx) => (
+                              <li key={idx} style={{ marginBottom: 4 }}>
+                                <span style={{ fontWeight: 800 }}>{r.label}:</span> <span style={{ opacity: 0.9 }}>{r.detail || ""}</span>
+                              </li>
+                            ))}
+                          </ul>
+
+                          {x.subjects?.length ? (
+                            <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
+                              Themen (Auszug): {truncate(x.subjects.slice(0, 6).join(", "), 140)}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+                        <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 800 }}>Score</div>
+                        <div style={{ fontWeight: 900 }}>{x.score.toFixed(1)}</div>
+
+                        <div style={{ display: "grid", gap: 6, width: "100%" }}>
+                          <button
+                            disabled={!!prefLoading[x.recId]}
+                            onClick={() => void sendPreference(x, "like")}
+                            className="btn"
+                            style={{ background: preference[x.recId] === "like" ? "rgba(76,175,80,0.25)" : undefined, opacity: prefLoading[x.recId] ? 0.7 : 1 }}
+                            title="Präferenzsignal vor dem Lesen"
+                          >
+                            {preference[x.recId] === "like" ? "Passt zu mir ✓" : "Passt zu mir"}
+                          </button>
+
+                          <button
+                            disabled={!!prefLoading[x.recId]}
+                            onClick={() => void sendPreference(x, "dislike")}
+                            className="btn"
+                            style={{ background: preference[x.recId] === "dislike" ? "rgba(244,67,54,0.24)" : undefined, opacity: prefLoading[x.recId] ? 0.7 : 1 }}
+                            title="Präferenzsignal vor dem Lesen"
+                          >
+                            {preference[x.recId] === "dislike" ? "Eher nicht ✓" : "Eher nicht"}
+                          </button>
+
+                          <button
+                            disabled={!!saved[x.recId]}
+                            onClick={() => void saveToLibrary(x)}
+                            className="btn btn-soft"
+                            style={{ opacity: saved[x.recId] ? 0.7 : 1 }}
+                            title="In deine Bibliothek speichern"
+                          >
+                            {saved[x.recId] ? "Gespeichert ✓" : "In Bibliothek speichern"}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
-
-                  <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
-                    <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 800 }}>Score</div>
-                    <div style={{ fontWeight: 900 }}>{x.score.toFixed(1)}</div>
-
-                    <div style={{ display: "grid", gap: 6, width: "100%" }}>
-                      <button
-                        disabled={!!prefLoading[x.recId]}
-                        onClick={() => void sendPreference(x, "like")}
-                        style={{
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.18)",
-                          background: preference[x.recId] === "like" ? "rgba(76,175,80,0.25)" : "transparent",
-                          cursor: prefLoading[x.recId] ? "default" : "pointer",
-                          fontWeight: 900,
-                          opacity: prefLoading[x.recId] ? 0.7 : 1,
-                          minWidth: 170,
-                        }}
-                        title="Präferenzsignal vor dem Lesen"
-                      >
-                        {preference[x.recId] === "like" ? "Passt zu mir ✓" : "Passt zu mir"}
-                      </button>
-
-                      <button
-                        disabled={!!prefLoading[x.recId]}
-                        onClick={() => void sendPreference(x, "dislike")}
-                        style={{
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.18)",
-                          background: preference[x.recId] === "dislike" ? "rgba(244,67,54,0.24)" : "transparent",
-                          cursor: prefLoading[x.recId] ? "default" : "pointer",
-                          fontWeight: 900,
-                          opacity: prefLoading[x.recId] ? 0.7 : 1,
-                          minWidth: 170,
-                        }}
-                        title="Präferenzsignal vor dem Lesen"
-                      >
-                        {preference[x.recId] === "dislike" ? "Eher nicht ✓" : "Eher nicht"}
-                      </button>
-
-                      <button
-                        disabled={!!saved[x.recId]}
-                        onClick={() => void saveToLibrary(x)}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.18)",
-                          background: saved[x.recId] ? "rgba(255,255,255,0.08)" : "transparent",
-                          cursor: saved[x.recId] ? "default" : "pointer",
-                          fontWeight: 900,
-                          opacity: saved[x.recId] ? 0.7 : 1,
-                          minWidth: 170,
-                        }}
-                        title="In deine Bibliothek speichern"
-                      >
-                        {saved[x.recId] ? "Gespeichert ✓" : "In Bibliothek speichern"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))
-            : null}
+                ))
+              : null}
+          </div>
         </div>
       </div>
     </div>

@@ -84,16 +84,25 @@ export default function BlocklistPage() {
 
   if (me && (me as any).ok && !user) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-        <div style={{ width: "100%", maxWidth: 980 }}>
-          <h1 style={{ fontSize: 28, marginBottom: 6 }}>Sperrliste</h1>
-          <p style={{ opacity: 0.85, marginTop: 0 }}>
-            Dafür brauchst du einen Account.
-          </p>
-          <div style={{ marginTop: 16 }}>
-            <a href="/" style={{ textDecoration: "underline" }}>
-              ← Zur Startseite (Login)
-            </a>
+      <div className="app-shell">
+        <div className="page">
+          <header className="page-header">
+            <div>
+              <h1 className="page-title">Sperrliste</h1>
+              <p className="page-subtitle">Dafür brauchst du einen Account.</p>
+            </div>
+            <div className="nav-links">
+              <a className="nav-pill" href="/">
+                Startseite
+              </a>
+            </div>
+          </header>
+
+          <div className="panel" style={{ marginTop: 18 }}>
+            <div className="panel-title">Login erforderlich</div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              Bitte anmelden, um die Sperrliste zu sehen.
+            </div>
           </div>
         </div>
       </div>
@@ -101,61 +110,56 @@ export default function BlocklistPage() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-      <div style={{ width: "100%", maxWidth: 980 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
+    <div className="app-shell">
+      <div className="page">
+        <header className="page-header">
           <div>
-            <h1 style={{ fontSize: 28, marginBottom: 6 }}>Sperrliste</h1>
-            <p style={{ marginTop: 0, opacity: 0.85 }}>Hier kannst du ausgeblendete Bücher wieder erlauben.</p>
+            <h1 className="page-title">Sperrliste</h1>
+            <p className="page-subtitle">Hier kannst du ausgeblendete Bücher wieder erlauben.</p>
           </div>
           <div style={{ textAlign: "right" }}>
-            <a href="/recommendations" style={{ textDecoration: "underline" }}>
-              ← Empfehlungen
-            </a>
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{user ? user.email : ""}</div>
-          </div>
-        </div>
-
-        {msg && <div style={{ marginTop: 10, opacity: 0.9 }}>{msg}</div>}
-
-        <div style={{ marginTop: 16, opacity: 0.85 }}>
-          {loading ? "Lädt…" : `Einträge (${items.length})`}
-        </div>
-
-        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-          {items.map((x) => (
-            <div
-              key={x.id}
-              style={{
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                display: "flex",
-                gap: 12,
-                alignItems: "center",
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 900 }}>{x.title || "(ohne Titel)"}</div>
-                <div style={{ opacity: 0.85 }}>{x.authors || "—"}</div>
-                <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {x.isbn || "—"}</div>
-              </div>
-              <button
-                onClick={() => void removeItem(x.id)}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
-                title="Aus Sperrliste entfernen"
-              >
-                Entfernen
-              </button>
+            <div className="nav-links">
+              <a className="nav-pill" href="/library">
+                Bibliothek
+              </a>
+              <a className="nav-pill" href="/recommendations">
+                Empfehlungen
+              </a>
             </div>
-          ))}
+            <div style={{ marginTop: 8, fontSize: 12 }} className="muted">
+              {user ? user.email : ""}
+            </div>
+          </div>
+        </header>
+
+        {msg && (
+          <div className="panel">
+            <div className="muted">{msg}</div>
+          </div>
+        )}
+
+        <div className="section">
+          <div className="section-title">
+            <span>Gesperrte Bücher</span>
+            <span className="section-meta">{loading ? "Lädt…" : `${items.length} Einträge`}</span>
+          </div>
+
+          <div className="books-grid">
+            {items.map((x) => (
+              <div key={x.id} className="book-card">
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800 }}>{x.title || "(ohne Titel)"}</div>
+                    <div className="muted">{x.authors || "—"}</div>
+                    <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {x.isbn || "—"}</div>
+                  </div>
+                  <button onClick={() => void removeItem(x.id)} className="btn btn-ghost" title="Aus Sperrliste entfernen">
+                    Entfernen
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

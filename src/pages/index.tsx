@@ -296,88 +296,46 @@ export default function HomePage() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", padding: 24 }}>
-      {/* Toasts */}
-      <div
-        style={{
-          position: "fixed",
-          top: 14,
-          right: 14,
-          zIndex: 9999,
-          display: "grid",
-          gap: 8,
-          width: 360,
-          maxWidth: "92vw",
-        }}
-      >
+    <div className="app-shell">
+      <div className="toast-stack">
         {toasts.map((t) => (
-          <div
-            key={t.id}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.16)",
-              background: "rgba(0,0,0,0.55)",
-              backdropFilter: "blur(6px)",
-              boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
-              fontWeight: 800,
-              opacity: 0.98,
-            }}
-          >
+          <div key={t.id} className="toast">
             <span style={{ opacity: 0.85 }}>{t.kind === "success" ? "✅ " : t.kind === "error" ? "⚠️ " : "ℹ️ "}</span>
             {t.text}
           </div>
         ))}
       </div>
 
-      <div style={{ width: "100%", maxWidth: 980 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
+      <div className="page">
+        <header className="page-header">
           <div>
-            <h1 style={{ fontSize: 28, marginBottom: 6 }}>Meine Bibliothek</h1>
-            <p style={{ marginTop: 0, opacity: 0.85 }}>
-              Suche nach ISBN, Titel oder Autor – speichere Treffer in deine Bibliothek.
-            </p>
+            <h1 className="page-title">Buchsuche</h1>
+            <p className="page-subtitle">Neue Bücher finden und direkt in die Bibliothek legen.</p>
           </div>
 
           <div style={{ textAlign: "right", minWidth: 330 }}>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
-              <a href="/library" style={{ textDecoration: "underline" }}>
-                Zur Bibliothek
+            <div className="nav-links">
+              <a className="nav-pill primary" href="/library">
+                Bibliothek
               </a>
-              <a href="/recommendations" style={{ textDecoration: "underline" }}>
+              <a className="nav-pill" href="/recommendations">
                 Empfehlungen
+              </a>
+              <a className="nav-pill" href="/blocklist">
+                Sperrliste
               </a>
             </div>
 
-            {/* Auth panel */}
-            <div
-              style={{
-                marginTop: 10,
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,0.12)",
-                display: "grid",
-                gap: 10,
-              }}
-            >
+            <div className="panel" style={{ marginTop: 12, padding: 14 }}>
               {user ? (
                 <>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>Eingeloggt als</div>
-                  <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {user.email}
-                  </div>
+                  <div className="panel-title">Eingeloggt</div>
+                  <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</div>
                   <button
                     type="button"
                     onClick={() => void doLogout()}
                     disabled={authWorking}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.18)",
-                      background: authWorking ? "rgba(255,255,255,0.08)" : "transparent",
-                      cursor: authWorking ? "default" : "pointer",
-                      fontWeight: 900,
-                    }}
+                    className="btn btn-ghost"
                   >
                     {authWorking ? "…" : "Logout"}
                   </button>
@@ -388,30 +346,16 @@ export default function HomePage() {
                     <button
                       type="button"
                       onClick={() => setAuthMode("login")}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.18)",
-                        background: authMode === "login" ? "rgba(255,255,255,0.08)" : "transparent",
-                        cursor: "pointer",
-                        fontWeight: 900,
-                        flex: 1,
-                      }}
+                      className="btn"
+                      style={{ flex: 1, background: authMode === "login" ? "var(--accent-soft)" : undefined }}
                     >
                       Login
                     </button>
                     <button
                       type="button"
                       onClick={() => setAuthMode("register")}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.18)",
-                        background: authMode === "register" ? "rgba(255,255,255,0.08)" : "transparent",
-                        cursor: "pointer",
-                        fontWeight: 900,
-                        flex: 1,
-                      }}
+                      className="btn"
+                      style={{ flex: 1, background: authMode === "register" ? "var(--accent-soft)" : undefined }}
                     >
                       Registrieren
                     </button>
@@ -422,13 +366,7 @@ export default function HomePage() {
                     onChange={(e) => setAuthEmail(e.target.value)}
                     placeholder="Email"
                     autoComplete="email"
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.18)",
-                      background: "transparent",
-                      color: "inherit",
-                    }}
+                    style={{ padding: "10px 12px", borderRadius: 10 }}
                   />
 
                   <input
@@ -440,32 +378,19 @@ export default function HomePage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter") void doAuth();
                     }}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.18)",
-                      background: "transparent",
-                      color: "inherit",
-                    }}
+                    style={{ padding: "10px 12px", borderRadius: 10 }}
                   />
 
                   <button
                     type="button"
                     onClick={() => void doAuth()}
                     disabled={authWorking}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.18)",
-                      background: authWorking ? "rgba(255,255,255,0.08)" : "transparent",
-                      cursor: authWorking ? "default" : "pointer",
-                      fontWeight: 900,
-                    }}
+                    className="btn"
                   >
                     {authWorking ? "…" : authMode === "login" ? "Einloggen" : "Account erstellen"}
                   </button>
 
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  <div style={{ fontSize: 12 }} className="muted">
                     {authMode === "login"
                       ? "Login nutzt deine bestehende Session."
                       : "Registrieren erstellt einen neuen Account und loggt dich ein."}
@@ -474,13 +399,17 @@ export default function HomePage() {
               )}
             </div>
           </div>
-        </div>
+        </header>
 
-        {msg && <div style={{ marginTop: 10, opacity: 0.9 }}>{msg}</div>}
+        {msg && (
+          <div className="panel">
+            <div className="muted">{msg}</div>
+          </div>
+        )}
 
-        <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <label style={{ fontWeight: 900 }}>ISBN, Titel oder Autor…</label>
+        <div className="panel" style={{ marginTop: 18 }}>
+          <div style={{ display: "grid", gap: 10 }}>
+            <label style={{ fontWeight: 800 }}>ISBN, Titel oder Autor</label>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <input
                 value={q}
@@ -488,190 +417,139 @@ export default function HomePage() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void doSearch();
                 }}
-                style={{
-                  flex: 1,
-                  minWidth: 260,
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  color: "inherit",
-                }}
+                style={{ flex: 1, minWidth: 260, padding: "10px 12px", borderRadius: 10 }}
                 placeholder="z.B. Max Frisch, Der Steppenwolf, 978…"
               />
-              <button
-                onClick={() => void doSearch()}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: "transparent",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
-              >
+              <button onClick={() => void doSearch()} className="btn">
                 Suchen
               </button>
             </div>
           </div>
+        </div>
 
-          <div style={{ marginTop: 6, opacity: 0.9 }}>{loading ? "Lädt…" : `Treffer (${results.length})`}</div>
+        <div className="section">
+          <div className="section-title">
+            <span>Suchergebnisse</span>
+            <span className="section-meta">{loading ? "Lädt…" : `${results.length} Treffer`}</span>
+          </div>
 
-          <div style={{ display: "grid", gap: 10 }}>
+          <div className="books-grid">
             {results.map((r) => (
-              <div
-                key={r.isbn || `${r.title}-${r.authors}` }
-                style={{
-                  padding: 12,
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  display: "flex",
-                  gap: 12,
-                  alignItems: "center",
-                }}
-              >
-                {r.coverUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={r.coverUrl}
-                    alt=""
-                    width={50}
-                    height={74}
-                    style={{ borderRadius: 10, objectFit: "cover" }}
-                  />
-                ) : (
-                  <div
-                    style={{
-                      width: 50,
-                      height: 74,
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      opacity: 0.6,
-                    }}
-                  />
-                )}
+              <div key={r.isbn || `${r.title}-${r.authors}`} className="book-card">
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  {r.coverUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={r.coverUrl}
+                      alt=""
+                      width={56}
+                      height={82}
+                      style={{ borderRadius: 10, objectFit: "cover", boxShadow: "0 6px 14px rgba(0,0,0,0.15)" }}
+                    />
+                  ) : (
+                    <div style={{ width: 56, height: 82, borderRadius: 10, border: "1px dashed var(--line)", opacity: 0.6 }} />
+                  )}
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 900 }}>{r.title}</div>
-                  <div style={{ opacity: 0.85 }}>{r.authors}</div>
-                  {r.description ? (
-                    <div style={{ opacity: 0.7, fontSize: 12, marginTop: 4 }}>
-                      {(() => {
-                        const key = r.isbn || `${r.title}-${r.authors}`;
-                        const isOpen = !!expandedSearchDesc[key];
-                        const short = r.description.slice(0, 220);
-                        const show = isOpen ? r.description : short;
-                        return (
-                          <>
-                            {show}{!isOpen && r.description.length > 220 ? "…" : ""}
-                            {r.description.length > 220 ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setExpandedSearchDesc((p) => ({ ...p, [key]: !p[key] }))
-                                }
-                                style={{
-                                  border: "none",
-                                  background: "transparent",
-                                  color: "inherit",
-                                  textDecoration: "underline",
-                                  cursor: "pointer",
-                                  fontWeight: 900,
-                                  opacity: 0.9,
-                                  padding: 0,
-                                  marginLeft: 6,
-                                }}
-                              >
-                                {isOpen ? "Weniger" : "Mehr"}
-                              </button>
-                            ) : null}
-                          </>
-                        );
-                      })()}
-                    </div>
-                  ) : null}
-                  <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {r.isbn ? r.isbn : "—"}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800 }}>{r.title}</div>
+                    <div className="muted">{r.authors}</div>
+                    {r.description ? (
+                      <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
+                        {(() => {
+                          const key = r.isbn || `${r.title}-${r.authors}`;
+                          const isOpen = !!expandedSearchDesc[key];
+                          const short = r.description.slice(0, 220);
+                          const show = isOpen ? r.description : short;
+                          return (
+                            <>
+                              {show}
+                              {!isOpen && r.description.length > 220 ? "…" : ""}
+                              {r.description.length > 220 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedSearchDesc((p) => ({ ...p, [key]: !p[key] }))}
+                                  style={{
+                                    border: "none",
+                                    background: "transparent",
+                                    color: "inherit",
+                                    textDecoration: "underline",
+                                    cursor: "pointer",
+                                    fontWeight: 800,
+                                    opacity: 0.9,
+                                    padding: 0,
+                                    marginLeft: 6,
+                                  }}
+                                >
+                                  {isOpen ? "Weniger" : "Mehr"}
+                                </button>
+                              ) : null}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    ) : null}
+                    <div style={{ opacity: 0.65, fontSize: 12 }}>ISBN: {r.isbn ? r.isbn : "—"}</div>
+                  </div>
+
+                  <div style={{ display: "grid", gap: 8, minWidth: 120 }}>
+                    <button
+                      onClick={() => void saveBook(r)}
+                      disabled={!user || !r.isbn}
+                      className="btn"
+                      style={{ opacity: user ? 1 : 0.7 }}
+                      title={!r.isbn ? "Ohne ISBN nicht speicherbar" : user ? "In deine Bibliothek speichern" : "Bitte einloggen"}
+                    >
+                      {!r.isbn ? "Keine ISBN" : "Speichern"}
+                    </button>
+                    <button
+                      onClick={() => void blockItem(r)}
+                      disabled={!user}
+                      className="btn btn-ghost"
+                      style={{ opacity: user ? 0.9 : 0.6 }}
+                      title={user ? "Ausblenden" : "Bitte einloggen"}
+                    >
+                      {blockLoading[r.isbn || `${r.title}-${r.authors}`] ? "…" : "Ausblenden"}
+                    </button>
+                  </div>
                 </div>
-
-                <button
-                  onClick={() => void saveBook(r)}
-                  disabled={!user || !r.isbn}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.18)",
-                    background: "transparent",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                    minWidth: 110,
-                    opacity: user ? 1 : 0.7,
-                  }}
-                  title={!r.isbn ? "Ohne ISBN nicht speicherbar" : user ? "In deine Bibliothek speichern" : "Bitte einloggen"}
-                >
-                  {!r.isbn ? "Keine ISBN" : "Speichern"}
-                </button>
               </div>
             ))}
           </div>
+        </div>
 
-          {/* Bulk add */}
-          <div
-            style={{
-              marginTop: 18,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.12)",
-              display: "grid",
-              gap: 10,
-              opacity: user ? 1 : 0.85,
-            }}
-          >
-            <div style={{ fontWeight: 900 }}>Bulk-Add (optional)</div>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>
-              Eine Zeile pro Buch (Titel oder ISBN). Speichert automatisch den besten Treffer.
-            </div>
-
-            <textarea
-              value={bulkText}
-              onChange={(e) => setBulkText(e.target.value)}
-              rows={6}
-              placeholder={`Beispiel:\nDer Schatten des Windes\n9783832165987\nThe Rosie Project`}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: "transparent",
-                color: "inherit",
-                resize: "vertical",
-              }}
-            />
-
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>Zeilen: {parseBulkLines(bulkText).length}</div>
-              <button
-                disabled={bulkWorking}
-                onClick={() => void bulkAdd()}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  background: bulkWorking ? "rgba(255,255,255,0.08)" : "transparent",
-                  cursor: bulkWorking ? "default" : "pointer",
-                  fontWeight: 900,
-                }}
-                title={user ? "Bulk speichern" : "Bitte einloggen"}
-              >
-                {bulkWorking ? "Speichert…" : "Bulk speichern"}
-              </button>
-            </div>
-
-            {!user && (
-              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                Hinweis: Speichern funktioniert erst nach Login/Registrierung (oben rechts).
-              </div>
-            )}
+        <div className="panel" style={{ marginTop: 18, opacity: user ? 1 : 0.85 }}>
+          <div style={{ fontWeight: 800 }}>Bulk-Add (optional)</div>
+          <div style={{ fontSize: 12 }} className="muted">
+            Eine Zeile pro Buch (Titel oder ISBN). Speichert automatisch den besten Treffer.
           </div>
+
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            rows={6}
+            placeholder={`Beispiel:\nDer Schatten des Windes\n9783832165987\nThe Rosie Project`}
+            style={{ width: "100%", padding: "10px 12px", borderRadius: 10, marginTop: 8 }}
+          />
+
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+            <div style={{ fontSize: 12 }} className="muted">
+              Zeilen: {parseBulkLines(bulkText).length}
+            </div>
+            <button
+              disabled={bulkWorking}
+              onClick={() => void bulkAdd()}
+              className="btn"
+              title={user ? "Bulk speichern" : "Bitte einloggen"}
+            >
+              {bulkWorking ? "Speichert…" : "Bulk speichern"}
+            </button>
+          </div>
+
+          {!user && (
+            <div style={{ fontSize: 12, marginTop: 8 }} className="muted">
+              Hinweis: Speichern funktioniert erst nach Login/Registrierung (oben rechts).
+            </div>
+          )}
         </div>
       </div>
     </div>
