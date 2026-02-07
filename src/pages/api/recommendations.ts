@@ -32,6 +32,8 @@ type OpenLibraryDoc = {
   subject?: string[];
   language?: string[];
   first_sentence?: string | { value?: string } | Array<string | { value?: string }>;
+  description?: string;
+  coverUrl?: string;
 };
 
 type OpenLibrarySearchCacheEntry = {
@@ -49,6 +51,7 @@ const TOPIC_WEIGHT = 28;
 const AUTHOR_WEIGHT = 12;
 const GERMAN_SCORE_BONUS = 4;
 const WIKIDATA_LANGS = ["en", "de", "es", "fr"] as const;
+const GOOGLE_BOOKS_API_KEY = String(process.env.GOOGLE_BOOKS_API_KEY || "").trim();
 
 const openLibrarySearchCache = new Map<string, OpenLibrarySearchCacheEntry>();
 const openLibraryWorkWikidataCache = new Map<string, string | null>();
@@ -384,6 +387,12 @@ async function fetchJson(url: string, timeoutMs = 12000, headers?: Record<string
  *  ----------------------------- */
 function coverFromIsbn(isbn: string) {
   return `https://covers.openlibrary.org/b/isbn/${encodeURIComponent(isbn)}-M.jpg`;
+}
+
+function coverFromDoc(doc: OpenLibraryDoc, isbn: string) {
+  const c = String((doc as any)?.coverUrl || "").trim();
+  if (c) return c;
+  return coverFromIsbn(isbn);
 }
 
 // Used for owned entries (small number), but kept global for cross-request wins.
@@ -723,6 +732,64 @@ async function openLibrarySearch(query: string, limit: number, debug: DebugInfo,
   }
 }
 
+async function googleBooksSearch(query: string, limit: number, debug: DebugInfo, type: string, langRestrict?: string): Promise<OpenLibraryDoc[]> {
+  if (!GOOGLE_BOOKS_API_KEY) return [];
+
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("printType", "books");
+  params.set("maxResults", String(Math.min(40, Math.max(1, limit))));
+  if (langRestrict) params.set("langRestrict", langRestrict);
+  params.set("key", GOOGLE_BOOKS_API_KEY);
+
+  const url = `https://www.googleapis.com/books/v1/volumes?${params.toString()}`;
+
+  try {
+    const j = await fetchJson(url, 12000);
+    const items = Array.isArray(j?.items) ? j.items : [];
+    const docs: OpenLibraryDoc[] = [];
+
+    for (const it of items) {
+      const vi = it?.volumeInfo || {};
+      const title = String(vi?.title || "").trim();
+      if (!title) continue;
+
+      const authors = Array.isArray(vi?.authors) ? vi.authors.map((x: any) => String(x).trim()).filter(Boolean) : [];
+      const identifiers = Array.isArray(vi?.industryIdentifiers) ? vi.industryIdentifiers : [];
+      const isbns = [];
+      for (const id of identifiers) {
+        const val = String(id?.identifier || "").trim();
+        if (val) isbns.push(val);
+      }
+
+      const categories = Array.isArray(vi?.categories) ? vi.categories.map((x: any) => String(x).trim()).filter(Boolean) : [];
+      const lang = vi?.language ? [String(vi.language).toLowerCase()] : [];
+      const desc = typeof vi?.description === "string" ? vi.description.trim() : "";
+      const cover = vi?.imageLinks?.thumbnail || vi?.imageLinks?.smallThumbnail || null;
+
+      docs.push({
+        title,
+        author_name: authors,
+        isbn: isbns,
+        subject: categories,
+        language: lang,
+        first_sentence: desc,
+        description: desc,
+        coverUrl: cover || undefined,
+      });
+    }
+
+    if (!Array.isArray(debug.googleBooksCalls)) debug.googleBooksCalls = [];
+    debug.googleBooksCalls.push({ type, q: query, limit, got: docs.length, langRestrict: langRestrict || null });
+
+    return docs;
+  } catch (e: any) {
+    if (!Array.isArray(debug.googleBooksCalls)) debug.googleBooksCalls = [];
+    debug.googleBooksCalls.push({ type, q: query, limit, got: 0, langRestrict: langRestrict || null, error: e?.message ?? "google books failed" });
+    return [];
+  }
+}
+
 function bestIsbnFromDoc(doc: OpenLibraryDoc): string | null {
   const isbns: string[] = Array.isArray(doc?.isbn) ? doc.isbn : [];
   const isbn13 = isbns.find((x) => typeof x === "string" && x.replace(/[^0-9]/g, "").length === 13);
@@ -737,6 +804,9 @@ function authorsFromDoc(doc: OpenLibraryDoc): string {
 }
 
 function descriptionFromDoc(doc: OpenLibraryDoc): string | null {
+  const direct = typeof doc?.description === "string" ? doc.description.trim() : "";
+  if (direct) return direct;
+
   const fs = doc?.first_sentence;
   if (!fs) return null;
 
@@ -790,8 +860,7 @@ function isGermanDocStrict(doc: OpenLibraryDoc): boolean {
   if (!hasGermanLang) return false;
 
   const title = String(doc.title || "");
-  const firstSentence = descriptionFromDoc(doc) || "";
-  return looksGerman(title) || looksGerman(firstSentence);
+  return looksGerman(title);
 }
 
 async function openLibraryDescriptionFromWorkKey(workKey: string | null): Promise<string | null> {
@@ -1123,6 +1192,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.minRating = minRating;
     debug.seedMode = seedMode;
     debug.deOnly = deOnly;
+    debug.googleBooksEnabled = Boolean(GOOGLE_BOOKS_API_KEY);
 
     const entries = await prisma.libraryEntry.findMany({
       where: { userId: user.id },
@@ -1185,17 +1255,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const docs: OpenLibraryDoc[] = [];
     debug.openLibraryCalls = [];
+    debug.googleBooksCalls = [];
 
     const subjectLimit = clamp(Math.ceil(limit), 10, 40);
     const authorLimit = clamp(Math.ceil(limit * 0.6), 8, 25);
 
-    const subjectQueriesDe = topSubjects.map((s) => ({ q: `subject:"${s}" language:ger`, type: "subject_de" as const, l: subjectLimit }));
-    const authorQueriesDe = topAuthors.map((a) => ({ q: `author:"${a}" language:ger`, type: "author_de" as const, l: authorLimit }));
-    const subjectQueries = topSubjects.map((s) => ({ q: `subject:"${s}"`, type: "subject" as const, l: subjectLimit }));
-    const authorQueries = topAuthors.map((a) => ({ q: `author:"${a}"`, type: "author" as const, l: authorLimit }));
+    const subjectQueriesDe = topSubjects.map((s) => ({ q: `subject:"${s}"`, type: "subject_de" as const, l: subjectLimit, lang: "de" }));
+    const authorQueriesDe = topAuthors.map((a) => ({ q: `inauthor:"${a}"`, type: "author_de" as const, l: authorLimit, lang: "de" }));
+    const subjectQueries = topSubjects.map((s) => ({ q: `subject:"${s}"`, type: "subject" as const, l: subjectLimit, lang: "" }));
+    const authorQueries = topAuthors.map((a) => ({ q: `inauthor:"${a}"`, type: "author" as const, l: authorLimit, lang: "" }));
     const allQueries = [...subjectQueriesDe, ...authorQueriesDe, ...subjectQueries, ...authorQueries];
 
-    const queryResults = await pMapLimit(allQueries, OPENLIBRARY_QUERY_CONCURRENCY, async (entry) => {
+    const googleResults = await pMapLimit(allQueries, OPENLIBRARY_QUERY_CONCURRENCY, async (entry) => {
+      const lang = entry.lang || undefined;
+      return googleBooksSearch(entry.q, entry.l, debug, entry.type, lang);
+    });
+
+    for (const chunk of googleResults) {
+      docs.push(...chunk);
+    }
+
+    const olQueries = [
+      ...topSubjects.map((s) => ({ q: `subject:"${s}" language:ger`, type: "subject_de" as const, l: subjectLimit })),
+      ...topAuthors.map((a) => ({ q: `author:"${a}" language:ger`, type: "author_de" as const, l: authorLimit })),
+      ...topSubjects.map((s) => ({ q: `subject:"${s}"`, type: "subject" as const, l: subjectLimit })),
+      ...topAuthors.map((a) => ({ q: `author:"${a}"`, type: "author" as const, l: authorLimit })),
+    ];
+
+    const queryResults = await pMapLimit(olQueries, OPENLIBRARY_QUERY_CONCURRENCY, async (entry) => {
       return openLibrarySearch(entry.q, entry.l, debug, entry.type);
     });
 
@@ -1234,7 +1321,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           isbn,
           title,
           authors,
-          coverUrl: coverFromIsbn(isbn),
+          coverUrl: coverFromDoc(doc, isbn),
           description: descriptionFromDoc(doc),
           score: score + (german ? GERMAN_SCORE_BONUS : 0),
           reasons,
